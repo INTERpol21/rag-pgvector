@@ -1,208 +1,88 @@
 # rag-pgvector
 
-Retrieval-Augmented Generation service: **FastAPI + Postgres/pgvector**, with
-swappable embeddings/LLM backends, inline `[n]` citations and an
-**LLM-as-a-Judge evals harness** that runs in CI.
+![ci](https://github.com/INTERpol21/rag-pgvector/actions/workflows/ci.yml/badge.svg)
 
-The whole pipeline runs **fully offline by default** (in-memory vector store,
-deterministic hashing embedder, mock LLM) and switches to
-pgvector + real models via environment variables — no code changes.
-
-## Architecture
-
-**Ingest pipeline** — `POST /ingest`:
-
-```mermaid
-flowchart LR
-    A["POST /ingest<br/>documents"] --> B["Recursive character chunker<br/>800 chars / 150 overlap"]
-    B --> C["Embedder<br/>hash 256-d or text-embedding-3-small"]
-    C --> D[("Vector store<br/>memory or pgvector")]
-    D --> E["documents + chunks upserted<br/>re-ingest replaces chunks (FK cascade)"]
-```
-
-**Query pipeline** — `POST /query`:
-
-```mermaid
-flowchart LR
-    Q["POST /query<br/>question, top_k"] --> E1["Embed question"]
-    E1 --> S["Cosine search<br/>pgvector <=> or in-memory brute force"]
-    S --> P["RAG prompt: numbered context blocks<br/>answer only from context, cite as [n]"]
-    P --> L["LLM synthesis<br/>mock or llm-gateway"]
-    L --> C["Citation extractor<br/>[n] -> chunk -> document"]
-    C --> R["answer + citations<br/>+ retrieved + usage"]
-```
+RAG service on FastAPI + Postgres/pgvector: swappable embedding and LLM backends, inline `[n]` citations, and an LLM-as-a-Judge evals harness wired into CI. Runs fully offline by default (in-memory store, hashing embedder, mock LLM); env vars switch it to pgvector and real models.
 
 ## What this demonstrates
 
-- **RAG design** — the classic two-pipeline shape (write path / read path)
-  with clean seams between chunking, embedding, storage and synthesis.
-- **pgvector schema & queries** — `vector(N)` columns, cosine `<=>`
-  ordered search, `ON DELETE CASCADE` chunk lifecycle, and a documented
-  IVFFlat indexing strategy for scale (`app/store.py`).
-- **Embeddings abstraction** — an `Embedder` protocol with a deterministic
-  feature-hashing implementation for offline use and an OpenAI-compatible
-  client for real semantic retrieval.
-- **Grounded answers with citations** — numbered context blocks, a prompt
-  that forbids answering outside the context, and `[n]` references parsed
-  back into `{document_id, chunk_id, snippet, score}` objects.
-- **LLM-as-a-Judge evals** — a golden set + metrics (hit_rate@k,
-  citation_presence, 1-5 judge score) with a deterministic mock judge for CI
-  and a real judge through the [llm-gateway](https://github.com/INTERpol21/llm-gateway).
+- The two-pipeline RAG shape (ingest / query) with clean seams between chunking, embedding, storage and synthesis.
+- pgvector specifics: `vector(N)` columns, cosine `<=>` search, `ON DELETE CASCADE` chunk lifecycle, IVFFlat indexing notes in `app/store.py`.
+- An `Embedder` protocol: deterministic feature hashing offline, OpenAI-compatible client for real retrieval.
+- Grounded answers: numbered context blocks, a prompt that forbids answering outside them, `[n]` parsed back into citation objects.
+- Evals with metrics (hit_rate@k, citation_presence, judge score) usable as a CI quality gate.
 
-## Quickstart (offline — runs instantly)
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph ingest["POST /ingest"]
+        A["documents"] --> B["chunk<br/>800 chars / 150 overlap"] --> C["embed<br/>hash 256-d | text-embedding-3-small"]
+    end
+    subgraph query["POST /query"]
+        Q["question"] --> S["embed + cosine top-k"] --> P["prompt: numbered context,<br/>answer only from it"] --> L["LLM<br/>mock | llm-gateway"] --> R["answer + citations"]
+    end
+    C --> V[("vector store<br/>memory | pgvector")] --> S
+```
+
+## Quickstart
 
 ```bash
 pip install -r requirements.txt
-uvicorn app.main:create_app --factory --port 8081
+uvicorn app.main:create_app --factory --port 8081   # offline: no Postgres, no keys
 ```
 
-No Postgres, no API keys: memory store + hashing embedder + mock LLM.
-
-### Full mode (pgvector + real LLM)
-
-```bash
-docker compose up --build   # api on :8081, pgvector/pgvector:pg16 on :5433
-```
-
-The API container runs with `STORE_BACKEND=pgvector`; the schema (extension,
-tables) is created on startup. To synthesize with a real model, point the
-service at the sibling [llm-gateway](https://github.com/INTERpol21/llm-gateway):
-
-```bash
-LLM_BACKEND=openai LLM_BASE_URL=http://localhost:8080/v1 \
-LLM_API_KEY=demo-key LLM_MODEL=gpt-4o-mini \
-uvicorn app.main:create_app --factory --port 8081
-```
-
-All knobs live in [.env.example](.env.example).
+Full mode: `docker compose up --build` runs the API with `STORE_BACKEND=pgvector` against `pgvector/pgvector:pg16` on :5433 (schema created on startup). For real synthesis, point `LLM_BACKEND=openai LLM_BASE_URL=http://localhost:8080/v1` at the sibling llm-gateway. All knobs: `.env.example`.
 
 ## API
 
-### Ingest documents
-
 ```bash
-curl -s localhost:8081/ingest -X POST -H 'content-type: application/json' -d '{
-  "documents": [
-    {"id": "pgvector_internals", "title": "pgvector Internals",
-     "text": "pgvector is a Postgres extension that adds a vector column type...",
-     "metadata": {"source": "docs"}}
-  ]
-}'
-```
+curl -s localhost:8081/ingest -X POST -H 'content-type: application/json' \
+  -d '{"documents": [{"id": "pgvector_internals", "title": "pgvector Internals", "text": "..."}]}'
 
-```json
-{"document_ids": ["pgvector_internals"], "chunks_indexed": 6}
-```
-
-### Ask a question
-
-```bash
-curl -s localhost:8081/query -X POST -H 'content-type: application/json' -d '{
-  "question": "Which pgvector distance operators exist and which opclass matches cosine?",
-  "top_k": 4
-}'
+curl -s localhost:8081/query -X POST -H 'content-type: application/json' \
+  -d '{"question": "Which pgvector operator matches cosine?", "top_k": 4}'
 ```
 
 ```json
 {
-  "answer": "pgvector ships three distance operators, each with a matching index opclass: `<->` — Euclidean (L2) distance, `vector_l2_ops`; `<#>` — negative inner product, `vector_ip_ops`; `<=>` — cosine distance, `vector_cosine_ops` [1]. ...",
-  "citations": [
-    {
-      "document_id": "pgvector_internals",
-      "title": "pgvector Internals",
-      "chunk_id": "pgvector_internals:1",
-      "snippet": "## Distance operators pgvector ships three distance operators, each with a matching index opclass: - `<->` — Euclidean (L2) distance…",
-      "score": 0.44
-    }
-  ],
-  "retrieved": [
-    {"chunk_id": "pgvector_internals:1", "document_id": "pgvector_internals",
-     "title": "pgvector Internals", "ord": 1, "score": 0.44}
-  ],
+  "answer": "... `<=>` — cosine distance, `vector_cosine_ops` [1] ...",
+  "citations": [{"document_id": "pgvector_internals", "chunk_id": "pgvector_internals:1",
+                 "snippet": "## Distance operators ...", "score": 0.44}],
+  "retrieved": [{"chunk_id": "pgvector_internals:1", "ord": 1, "score": 0.44}],
   "usage": {"prompt_tokens": 416, "completion_tokens": 58, "total_tokens": 474}
 }
 ```
 
-(With the default `LLM_BACKEND=mock` the answer is *extractive* — the mock
-copies the question-relevant sentences from the top chunks and cites them.
-Swap in a real model for actual synthesis; the citation contract is identical.)
-
-### Stats & health
-
-```bash
-curl -s localhost:8081/stats
-# {"backend": "memory", "documents": 4, "chunks": 22,
-#  "embeddings_backend": "hash", "llm_backend": "mock", "embedding_dim": 256}
-curl -s localhost:8081/healthz
-# {"status": "ok"}
-```
+`GET /stats` reports backends and document/chunk counts; `GET /healthz` is the liveness probe.
 
 ## Evals
-
-`data/` ships a small technical corpus — four engineering notes on the stack
-this portfolio covers (LLM gateways, RAG architecture, pgvector internals,
-MCP). `evals/golden.jsonl` holds 12 question/reference/expected-document
-triples over it.
 
 ```bash
 python evals/run_evals.py --min-hit-rate 0.7
 ```
 
-Builds a fresh in-memory index, runs the *full* pipeline per item and writes
-`evals/report.md` (gitignored). Sample run:
+Runs the full pipeline over `evals/golden.jsonl` (12 questions on the 4-note demo corpus in `data/`) and writes `evals/report.md`. Sample run: hit_rate@4 1.00, citation_presence 1.00, judge_score 3.42/5. The default judge is a deterministic keyword-overlap mock, so CI stays reproducible; `JUDGE_BACKEND=openai` scores with a real model through the gateway. `--min-hit-rate` fails the build on retrieval regressions.
 
-| metric | value |
-|---|---|
-| hit_rate@4 | 1.00 |
-| citation_presence | 1.00 |
-| judge_score (1-5) | 3.42 |
+## Configuration
 
-The default judge is a deterministic keyword-overlap `MockJudge`, so evals
-are reproducible offline and CI-friendly; `JUDGE_BACKEND=openai` scores
-answers with a real model through the gateway.
-`--min-hit-rate` turns the harness into a CI quality gate: retrieval
-regressions fail the build.
+| Variable | Default | Notes |
+|---|---|---|
+| `STORE_BACKEND` | `memory` | `memory` or `pgvector` (`DATABASE_URL` for the latter) |
+| `EMBEDDINGS_BACKEND` | `hash` | `hash` (256-d, deterministic) or `openai` |
+| `LLM_BACKEND` | `mock` | `mock` or `openai`; `LLM_BASE_URL` defaults to the gateway on :8080 |
+| `JUDGE_BACKEND` | `mock` | judge used by the evals harness |
+
+## Notes
+
+- The mock LLM is extractive — it copies question-relevant sentences from the top chunks and cites them. A real model swaps in with the same citation contract.
+- Re-ingesting a document id replaces its chunks (FK cascade).
 
 ## Testing
 
-```bash
-pip install -r requirements-dev.txt
-python -m pytest
-ruff check app tests evals
-```
-
-Unit and e2e tests run against the in-memory stack — no network, no database.
-The `PgVectorStore` integration test is skipped unless `DATABASE_URL` points
-at a live Postgres with pgvector (e.g. the docker-compose `db` on
-`postgresql://rag:rag@localhost:5433/rag`).
-
-## Project layout
-
-```
-app/
-  chunking.py     # recursive character splitter (pure, lossless, overlap-exact)
-  embeddings.py   # Embedder protocol: HashingEmbedder | OpenAIEmbedder
-  store.py        # VectorStore protocol: MemoryVectorStore | PgVectorStore
-  llm.py          # RAG prompt + MockLLM | OpenAIChatLLM (via llm-gateway)
-  citations.py    # [n] -> retrieved chunk -> citation objects
-  main.py         # create_app() factory, DI via app.state, error handlers
-  settings.py     # pydantic-settings
-data/             # demo corpus: 4 engineering notes (gateway, RAG, pgvector, MCP)
-evals/            # golden.jsonl, run_evals.py, report.md
-tests/            # chunker, embedder, store, citations, API e2e, evals smoke
-```
-
-> **Note:** this is a portfolio demo project — intentionally compact,
-> dependency-light and offline-first. The seams (protocols for embedder,
-> store, LLM, judge) are where a production system would plug in real
-> infrastructure.
+26 tests, offline against the in-memory stack: `pip install -r requirements-dev.txt && python -m pytest`; lint with `ruff check app tests evals`.
+The 3 `PgVectorStore` integration tests skip unless `DATABASE_URL` points at a live pgvector Postgres (compose db: `postgresql://rag:rag@localhost:5433/rag`).
 
 ---
 
-**Part of the AI Platform Portfolio:**
-[llm-gateway](https://github.com/INTERpol21/llm-gateway) ·
-**rag-pgvector** ·
-[mcp-tools-server](https://github.com/INTERpol21/mcp-tools-server) ·
-[agent-orchestrator](https://github.com/INTERpol21/agent-orchestrator)
-
-MIT © 2026 Anton Zhuravlev
+MIT. Portfolio demo — siblings: [llm-gateway](https://github.com/INTERpol21/llm-gateway) · [mcp-tools-server](https://github.com/INTERpol21/mcp-tools-server) · [agent-orchestrator](https://github.com/INTERpol21/agent-orchestrator)
