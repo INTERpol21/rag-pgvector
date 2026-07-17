@@ -40,3 +40,23 @@ def test_dedup_preserves_first_appearance_order():
     assert extract_reference_indices(answer) == [2, 1]
     citations = extract_citations(answer, RETRIEVED)
     assert [c.chunk_id for c in citations] == ["beta:1", "alpha:0"]
+
+
+def test_hostile_reference_shapes_are_pinned():
+    # [0] is out of range (1-based) and dropped
+    assert extract_reference_indices("ref [0] only") == [0]
+    assert extract_citations("ref [0] only", RETRIEVED) == []
+    # a wildly out-of-range index is dropped, not an IndexError
+    assert extract_citations("way out [99]", RETRIEVED) == []
+    # adjacency and repetition: dedup, first-appearance order, no crash
+    assert extract_reference_indices("[1][2][1]") == [1, 2]
+    assert [c.chunk_id for c in extract_citations("[1][2][1]", RETRIEVED)] == [
+        "alpha:0",
+        "beta:1",
+    ]
+    # whitespace inside the brackets is NOT a citation (strict [\d+] shape)
+    assert extract_reference_indices("spaced [1 ] and [ 1]") == []
+    assert extract_citations("spaced [1 ] and [ 1]", RETRIEVED) == []
+    # zero-padded index parses as its integer value
+    assert extract_reference_indices("[01]") == [1]
+    assert [c.chunk_id for c in extract_citations("[01]", RETRIEVED)] == ["alpha:0"]

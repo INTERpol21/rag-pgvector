@@ -140,7 +140,9 @@ class OpenAIChatLLM:
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            # trust_env=False: the synthesis endpoint is an internal service
+            # (usually the sibling llm-gateway); system proxies must not reroute it.
+            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=False) as client:
                 resp = await client.post(
                     f"{self.base_url}/chat/completions", json=payload, headers=headers
                 )

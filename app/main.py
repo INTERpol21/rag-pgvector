@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.chunking import chunk_text
 from app.citations import extract_citations
@@ -28,16 +29,54 @@ from app.store import (
 # API schemas
 # --------------------------------------------------------------------------- #
 
+# Input bounds. These keep a single request's memory/compute footprint finite
+# so hostile payloads (a 2 MB document, a 500-document batch, a 50 KB question)
+# are rejected with 422 instead of ballooning the in-memory index. The limits
+# are ~100x real usage (corpus docs are ~2.5 KB), so they never bite normal use.
+MAX_TITLE_CHARS = 1_000
+MAX_TEXT_CHARS = 1_000_000  # 1 MB
+MAX_QUESTION_CHARS = 10_000
+MAX_DOCS_PER_REQUEST = 100
+MAX_METADATA_BYTES = 64 * 1024  # 64 KB of JSON-serialised metadata per document
+
 
 class DocumentIn(BaseModel):
     id: Optional[str] = None
-    title: str = Field(min_length=1)
-    text: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("title", "text")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        # min_length=1 lets whitespace-only strings through; reject them so a
+        # document that would index to zero chunks never becomes a ghost record.
+        if not value.strip():
+            raise ValueError("must not be blank or whitespace-only")
+        return value
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_within_bound(cls, value: dict) -> dict:
+        if len(json.dumps(value, default=str)) > MAX_METADATA_BYTES:
+            raise ValueError(
+                f"metadata too large (limit is {MAX_METADATA_BYTES} bytes serialised)"
+            )
+        return value
 
 
 class IngestRequest(BaseModel):
-    documents: list[DocumentIn] = Field(min_length=1)
+    documents: list[DocumentIn] = Field(min_length=1, max_length=MAX_DOCS_PER_REQUEST)
+
+    @model_validator(mode="after")
+    def _no_duplicate_ids(self) -> "IngestRequest":
+        # Two documents sharing an explicit id in one batch is ambiguous: the
+        # second would silently overwrite the first's chunks while chunks_indexed
+        # still counted both. Reject it so ingest stays deterministic.
+        explicit_ids = [d.id for d in self.documents if d.id is not None]
+        if len(explicit_ids) != len(set(explicit_ids)):
+            raise ValueError("duplicate document ids within a single request are not allowed")
+        return self
 
 
 class IngestResponse(BaseModel):
@@ -46,8 +85,15 @@ class IngestResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     top_k: int = Field(default=4, ge=1, le=20)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("question must not be blank or whitespace-only")
+        return value
 
 
 class CitationOut(BaseModel):

@@ -182,8 +182,24 @@ class EvalSummary:
         return sum(i.judge_score for i in self.items) / len(self.items)
 
 
+_REQUIRED_GOLDEN_KEYS = ("question", "expected_document_id", "reference_answer")
+
+
 def load_golden(path: Path, limit: Optional[int] = None) -> list[dict]:
-    items = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    items: list[dict] = []
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"golden line {lineno} is not valid JSON: {exc}") from exc
+        missing = [k for k in _REQUIRED_GOLDEN_KEYS if k not in row]
+        if missing:
+            raise ValueError(
+                f"golden line {lineno} is missing required key(s): {', '.join(missing)}"
+            )
+        items.append(row)
     return items[:limit] if limit is not None else items
 
 

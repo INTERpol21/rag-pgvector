@@ -1,7 +1,16 @@
+import asyncio
+
 import httpx
 
 from app.errors import ProviderError
-from app.main import create_app
+from app.main import (
+    MAX_DOCS_PER_REQUEST,
+    MAX_METADATA_BYTES,
+    MAX_QUESTION_CHARS,
+    MAX_TEXT_CHARS,
+    MAX_TITLE_CHARS,
+    create_app,
+)
 from app.settings import Settings
 
 
@@ -130,6 +139,129 @@ async def test_reingest_replaces_document_chunks(ingested_client):
     assert top["title"] == "Espresso Handbook v2"
     assert "lungo" in top["snippet"]
     assert "Crema" not in top["snippet"]
+
+
+# --------------------------------------------------------------------------- #
+# Hostile-input hardening (adversarial regression tests)
+# --------------------------------------------------------------------------- #
+
+
+async def test_ingest_oversized_inputs_rejected_422(client):
+    # text over the 1 MB cap (a 2 MB document would otherwise index ~3k chunks)
+    resp = await client.post(
+        "/ingest", json={"documents": [{"title": "big", "text": "x" * (MAX_TEXT_CHARS + 1)}]}
+    )
+    assert resp.status_code == 422
+    # title over cap
+    resp = await client.post(
+        "/ingest",
+        json={"documents": [{"title": "T" * (MAX_TITLE_CHARS + 1), "text": "ok"}]},
+    )
+    assert resp.status_code == 422
+    # too many documents in one batch
+    docs = [{"title": f"d{i}", "text": "hi"} for i in range(MAX_DOCS_PER_REQUEST + 1)]
+    resp = await client.post("/ingest", json={"documents": docs})
+    assert resp.status_code == 422
+    # metadata over the serialised-size cap
+    resp = await client.post(
+        "/ingest",
+        json={"documents": [{"title": "m", "text": "hi", "metadata": {"a": "x" * (MAX_METADATA_BYTES + 10)}}]},
+    )
+    assert resp.status_code == 422
+
+
+async def test_ingest_blank_text_or_title_rejected_422(client):
+    # whitespace-only text passes min_length=1 but must not create a ghost doc
+    resp = await client.post(
+        "/ingest", json={"documents": [{"title": "t", "text": "   \n\t  "}]}
+    )
+    assert resp.status_code == 422
+    resp = await client.post(
+        "/ingest", json={"documents": [{"title": "   ", "text": "real text"}]}
+    )
+    assert resp.status_code == 422
+
+
+async def test_ingest_duplicate_ids_in_one_request_rejected_422(client):
+    resp = await client.post(
+        "/ingest",
+        json={
+            "documents": [
+                {"id": "dup", "title": "A", "text": "first alpha"},
+                {"id": "dup", "title": "B", "text": "second beta"},
+            ]
+        },
+    )
+    assert resp.status_code == 422
+    # nothing partially ingested
+    stats = (await client.get("/stats")).json()
+    assert stats["documents"] == 0 and stats["chunks"] == 0
+
+
+async def test_ingest_separator_only_text_accepted(client):
+    # non-blank (contains '.') so it is a legitimate single chunk, not a ghost doc
+    resp = await client.post(
+        "/ingest", json={"documents": [{"title": "seps", "text": "\n\n. \n\n"}]}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["chunks_indexed"] == 1
+
+
+async def test_ingest_metadata_within_bound_accepted(client):
+    resp = await client.post(
+        "/ingest",
+        json={"documents": [{"title": "m", "text": "hi", "metadata": {"tags": "x" * 1000}}]},
+    )
+    assert resp.status_code == 200
+
+
+async def test_query_oversized_question_rejected_422(client):
+    resp = await client.post("/query", json={"question": "q" * (MAX_QUESTION_CHARS + 1)})
+    assert resp.status_code == 422
+    # blank question also rejected
+    resp = await client.post("/query", json={"question": "   "})
+    assert resp.status_code == 422
+
+
+async def test_query_unicode_and_injection_are_inert(ingested_client):
+    # unicode / emoji / RTL question does not crash retrieval
+    resp = await ingested_client.post(
+        "/query", json={"question": "café ☕ مرحبا שלום 你好 🚀 pgvector"}
+    )
+    assert resp.status_code == 200
+    # SQL-injection-looking text is just tokens to the memory store: inert
+    before = (await ingested_client.get("/stats")).json()
+    resp = await ingested_client.post(
+        "/query", json={"question": "'; DROP TABLE chunks; -- SELECT * FROM x"}
+    )
+    assert resp.status_code == 200
+    after = (await ingested_client.get("/stats")).json()
+    assert before["documents"] == after["documents"]
+    assert before["chunks"] == after["chunks"]
+
+
+async def test_concurrent_ingest_and_query_keep_store_coherent(client):
+    async def ingest(i: int):
+        return await client.post(
+            "/ingest",
+            json={"documents": [{"id": f"doc{i}", "title": f"T{i}", "text": f"alpha{i} beta{i} gamma{i}. " * 20}]},
+        )
+
+    async def query(i: int):
+        return await client.post("/query", json={"question": f"alpha{i} beta{i}", "top_k": 5})
+
+    tasks = []
+    for i in range(20):
+        tasks.append(ingest(i))
+        tasks.append(query(i))
+    results = await asyncio.gather(*tasks)
+    assert all(r.status_code == 200 for r in results)
+
+    reported = sum(r.json()["chunks_indexed"] for r in results if "chunks_indexed" in r.json())
+    stats = (await client.get("/stats")).json()
+    assert stats["documents"] == 20
+    # store chunk count equals the sum of per-document chunks reported at ingest
+    assert stats["chunks"] == reported
 
 
 class _FailingLLM:

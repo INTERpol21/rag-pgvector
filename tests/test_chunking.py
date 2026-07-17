@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from app.chunking import chunk_text
@@ -70,3 +72,35 @@ def test_edge_cases():
     chunks = chunk_text(blob, chunk_size=400, chunk_overlap=100)
     rebuilt = chunks[0] + "".join(c[100:] for c in chunks[1:])
     assert rebuilt == blob
+
+
+def test_property_fuzz_random_unicode_and_bounds():
+    """200 random unicode texts x random valid (size, overlap): invariants hold."""
+    rng = random.Random(1234)
+    alphabet = "abc 0123 .\n\té中\U0001F600‏‎"  # incl. emoji + RTL/LTR marks
+
+    def non_ws(s: str) -> str:
+        return "".join(s.split())
+
+    for _ in range(200):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 500)))
+        size = rng.randint(1, 200)
+        overlap = rng.randint(0, size - 1)  # valid range: 0 <= overlap < size
+        chunks = chunk_text(text, size, overlap)
+        # size bound: no chunk exceeds chunk_size
+        assert all(len(c) <= size for c in chunks)
+        # every chunk is a contiguous substring of the input (no fabrication)
+        assert all(c in text for c in chunks)
+        # no-loss with overlap==0: chunks tile the text, only whitespace-only
+        # slices are dropped, so no non-whitespace character is ever lost.
+        if overlap == 0:
+            assert non_ws("".join(chunks)) == non_ws(text)
+
+
+def test_property_fuzz_terminates_on_degenerate_sizes():
+    """size=1/overlap=0 on a long blob terminates and stays within bounds."""
+    text = "a" * 1000 + " " + "b" * 1000
+    chunks = chunk_text(text, chunk_size=1, chunk_overlap=0)
+    assert max(len(c) for c in chunks) == 1
+    # 2000 non-space characters, each its own chunk (spaces dropped as blank)
+    assert len(chunks) == 2000
