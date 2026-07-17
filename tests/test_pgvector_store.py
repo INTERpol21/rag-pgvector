@@ -28,7 +28,7 @@ def test_schema_sql_and_lazy_construction():
     assert "CREATE EXTENSION IF NOT EXISTS vector" in sql
     assert "vector(256)" in sql
     assert "ON DELETE CASCADE" in sql
-    assert "ivfflat" in sql  # scaling note is documented in the schema
+    assert "hnsw" in sql  # ANN index (migrations/002_hnsw.sql) is part of the schema
 
     assert "<=>" in SEARCH_SQL and "ORDER BY" in SEARCH_SQL
 

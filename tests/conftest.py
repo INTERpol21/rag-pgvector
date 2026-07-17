@@ -8,6 +8,12 @@ from app.settings import Settings
 from app.store import MemoryVectorStore
 
 
+# The API requires a bearer key (RAG_API_KEYS); every test client sends the
+# default one. Auth-specific tests build their own clients without it.
+API_KEY = "demo-key"
+AUTH_HEADERS = {"Authorization": f"Bearer {API_KEY}"}
+
+
 @pytest.fixture
 def embedder() -> HashingEmbedder:
     return HashingEmbedder(dim=256)
@@ -19,17 +25,26 @@ def store() -> MemoryVectorStore:
 
 
 @pytest.fixture
-def app(store, embedder):
-    settings = Settings(
-        embeddings_backend="hash", store_backend="memory", llm_backend="mock"
+def settings() -> Settings:
+    return Settings(
+        embeddings_backend="hash",
+        store_backend="memory",
+        llm_backend="mock",
+        rag_api_keys=API_KEY,
     )
+
+
+@pytest.fixture
+def app(settings, store, embedder):
     return create_app(settings, store=store, embedder=embedder, llm=MockLLM())
 
 
 @pytest.fixture
 async def client(app):
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=AUTH_HEADERS
+    ) as c:
         yield c
 
 

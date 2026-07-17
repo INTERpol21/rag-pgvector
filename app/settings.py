@@ -1,5 +1,7 @@
 """Application settings loaded from environment variables / .env."""
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +19,8 @@ class Settings(BaseSettings):
     # --- API ---
     host: str = "0.0.0.0"
     port: int = 8081
+    # Comma-separated bearer tokens accepted on /ingest, /query and /stats.
+    rag_api_keys: str = "demo-key"
 
     # --- Chunking ---
     chunk_size: int = 800
@@ -32,6 +36,12 @@ class Settings(BaseSettings):
     # --- Vector store ---
     store_backend: str = "memory"  # memory | pgvector
     database_url: str = "postgresql://rag:rag@localhost:5432/rag"
+
+    # --- Retrieval ---
+    # hybrid = RRF merge of vector search and keyword search (BM25 in memory,
+    # Postgres FTS in pgvector); vector = cosine-only, the pre-hybrid behavior.
+    search_mode: Literal["vector", "hybrid"] = "hybrid"
+    reranker: str = "none"  # none | mock | llm
 
     # --- LLM synthesis ---
     llm_backend: str = "mock"  # mock | openai

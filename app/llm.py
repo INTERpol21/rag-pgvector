@@ -132,10 +132,12 @@ class OpenAIChatLLM:
         self.timeout_s = timeout_s
         self.temperature = temperature
 
-    async def answer(self, question: str, chunks: Sequence[ScoredChunk]) -> LLMResult:
+    async def complete(self, messages: list[dict]) -> LLMResult:
+        """Raw chat completion for arbitrary messages (also used by the
+        LLM reranker, which needs a scoring prompt rather than RAG synthesis)."""
         payload = {
             "model": self.model,
-            "messages": build_messages(question, chunks),
+            "messages": messages,
             "temperature": self.temperature,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -155,6 +157,9 @@ class OpenAIChatLLM:
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"LLM returned malformed response: {data!r}") from exc
         return LLMResult(answer=answer or "", usage=data.get("usage"))
+
+    async def answer(self, question: str, chunks: Sequence[ScoredChunk]) -> LLMResult:
+        return await self.complete(build_messages(question, chunks))
 
 
 def build_llm(settings) -> LLM:

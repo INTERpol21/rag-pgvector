@@ -37,7 +37,12 @@ from app.embeddings import HashingEmbedder  # noqa: E402
 from app.errors import ProviderError  # noqa: E402
 from app.llm import LLM, MockLLM  # noqa: E402
 from app.settings import Settings  # noqa: E402
-from app.store import ChunkRecord, DocumentRecord, MemoryVectorStore  # noqa: E402
+from app.store import (  # noqa: E402
+    ChunkRecord,
+    DocumentRecord,
+    MemoryVectorStore,
+    search_with_mode,
+)
 
 GOLDEN_PATH = ROOT / "evals" / "golden.jsonl"
 DATA_DIR = ROOT / "data"
@@ -257,7 +262,10 @@ async def run_evals(
     for item in load_golden(golden_path, limit):
         question = item["question"]
         query_vec = (await embedder.embed([question]))[0]
-        retrieved = await store.search(query_vec, top_k=top_k)
+        # Same dispatch as the API: SEARCH_MODE decides vector vs hybrid.
+        retrieved = await search_with_mode(
+            store, settings.search_mode, query_vec, question, top_k
+        )
         result = await llm.answer(question, retrieved)
         citations = extract_citations(result.answer, retrieved)
         doc_ids = [c.document_id for c in retrieved]

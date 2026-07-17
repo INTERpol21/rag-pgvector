@@ -277,7 +277,9 @@ async def test_llm_failure_maps_to_502(store, embedder):
         llm=_FailingLLM(),
     )
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers={"Authorization": "Bearer demo-key"}
+    ) as client:
         resp = await client.post("/query", json={"question": "boom"})
     assert resp.status_code == 502
     assert "upstream provider error" in resp.json()["detail"]

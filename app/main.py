@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -16,6 +18,7 @@ from app.citations import extract_citations
 from app.embeddings import Embedder, build_embedder
 from app.errors import ProviderError
 from app.llm import LLM, build_llm
+from app.rerank import Reranker, build_reranker
 from app.settings import Settings
 from app.store import (
     ChunkRecord,
@@ -23,6 +26,7 @@ from app.store import (
     PgVectorStore,
     VectorStore,
     build_store,
+    search_with_mode,
 )
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +86,12 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     document_ids: list[str]
     chunks_indexed: int
+    skipped: int  # documents whose content hash was unchanged (not re-indexed)
+
+
+def content_hash(title: str, text: str) -> str:
+    """Stable identity of a document's indexed content (title + text)."""
+    return hashlib.sha256(f"{title}\n{text}".encode("utf-8")).hexdigest()
 
 
 class QueryRequest(BaseModel):
@@ -130,17 +140,22 @@ def create_app(
     store: Optional[VectorStore] = None,
     embedder: Optional[Embedder] = None,
     llm: Optional[LLM] = None,
+    reranker: Optional[Reranker] = None,
 ) -> FastAPI:
     """Build the application.
 
     Components not supplied explicitly (as tests do) are constructed from
     settings, which in turn default to the fully offline stack
-    (memory store + hashing embedder + mock LLM).
+    (memory store + hashing embedder + mock LLM, no reranker).
     """
     settings = settings or Settings()
     embedder = embedder or build_embedder(settings)
     store = store or build_store(settings, dim=embedder.dim)
     llm = llm or build_llm(settings)
+    reranker = reranker or build_reranker(settings, llm)
+    api_keys = frozenset(
+        key.strip() for key in settings.rag_api_keys.split(",") if key.strip()
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -167,6 +182,23 @@ def create_app(
     app.state.store = store
     app.state.embedder = embedder
     app.state.llm = llm
+    app.state.reranker = reranker
+
+    async def require_api_key(request: Request) -> None:
+        """Bearer auth against the RAG_API_KEYS set (401 on any mismatch)."""
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        token = token.strip()
+        authorized = scheme.lower() == "bearer" and any(
+            secrets.compare_digest(token, key) for key in api_keys
+        )
+        if not authorized:
+            raise HTTPException(
+                status_code=401,
+                detail="missing or invalid API key (send 'Authorization: Bearer <key>')",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    authed = [Depends(require_api_key)]
 
     @app.exception_handler(ProviderError)
     async def provider_error_handler(request: Request, exc: ProviderError):
@@ -174,20 +206,33 @@ def create_app(
             status_code=502, content={"detail": f"upstream provider error: {exc}"}
         )
 
-    @app.post("/ingest", response_model=IngestResponse)
+    @app.post("/ingest", response_model=IngestResponse, dependencies=authed)
     async def ingest(payload: IngestRequest) -> IngestResponse:
         st: Settings = app.state.settings
         document_ids: list[str] = []
-        docs_with_chunks: list[tuple[DocumentRecord, list[str]]] = []
-        all_texts: list[str] = []
+        incoming: list[tuple[DocumentIn, str, str]] = []  # (doc, id, hash)
 
         for doc in payload.documents:
             doc_id = doc.id or uuid.uuid4().hex
+            document_ids.append(doc_id)
+            incoming.append((doc, doc_id, content_hash(doc.title, doc.text)))
+
+        # Idempotence: a document whose (title, text) hash matches what is
+        # already stored is skipped before any chunking or embedding work.
+        existing = await app.state.store.content_hashes([i[1] for i in incoming])
+        skipped = 0
+        docs_with_chunks: list[tuple[DocumentRecord, list[str]]] = []
+        all_texts: list[str] = []
+        for doc, doc_id, doc_hash in incoming:
+            if existing.get(doc_id) == doc_hash:
+                skipped += 1
+                continue
             pieces = chunk_text(doc.text, st.chunk_size, st.chunk_overlap)
-            record = DocumentRecord(id=doc_id, title=doc.title, metadata=doc.metadata)
+            record = DocumentRecord(
+                id=doc_id, title=doc.title, metadata=doc.metadata, content_hash=doc_hash
+            )
             docs_with_chunks.append((record, pieces))
             all_texts.extend(pieces)
-            document_ids.append(doc_id)
 
         # One batched embedding call for the whole request.
         vectors = await app.state.embedder.embed(all_texts) if all_texts else []
@@ -209,12 +254,19 @@ def create_app(
             await app.state.store.upsert(record, chunk_records)
             chunks_indexed += len(chunk_records)
 
-        return IngestResponse(document_ids=document_ids, chunks_indexed=chunks_indexed)
+        return IngestResponse(
+            document_ids=document_ids, chunks_indexed=chunks_indexed, skipped=skipped
+        )
 
-    @app.post("/query", response_model=QueryResponse)
+    @app.post("/query", response_model=QueryResponse, dependencies=authed)
     async def query(payload: QueryRequest) -> QueryResponse:
+        st: Settings = app.state.settings
         query_vec = (await app.state.embedder.embed([payload.question]))[0]
-        retrieved = await app.state.store.search(query_vec, top_k=payload.top_k)
+        retrieved = await search_with_mode(
+            app.state.store, st.search_mode, query_vec, payload.question, payload.top_k
+        )
+        if app.state.reranker is not None:
+            retrieved = await app.state.reranker.rerank(payload.question, retrieved)
         result = await app.state.llm.answer(payload.question, retrieved)
         citations = extract_citations(result.answer, retrieved)
         return QueryResponse(
@@ -233,7 +285,7 @@ def create_app(
             usage=result.usage,
         )
 
-    @app.get("/stats")
+    @app.get("/stats", dependencies=authed)
     async def stats() -> dict:
         st: Settings = app.state.settings
         store_stats = await app.state.store.stats()
@@ -242,6 +294,8 @@ def create_app(
             "embeddings_backend": st.embeddings_backend,
             "llm_backend": st.llm_backend,
             "embedding_dim": app.state.embedder.dim,
+            "search_mode": st.search_mode,
+            "reranker": app.state.reranker.name if app.state.reranker else "none",
         }
 
     @app.get("/healthz")
