@@ -19,8 +19,9 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from app.migrations import (
     CREATE_MIGRATIONS_TABLE_SQL,
@@ -153,7 +154,7 @@ async def search_with_mode(
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:

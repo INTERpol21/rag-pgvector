@@ -165,7 +165,11 @@ async def test_ingest_oversized_inputs_rejected_422(client):
     # metadata over the serialised-size cap
     resp = await client.post(
         "/ingest",
-        json={"documents": [{"title": "m", "text": "hi", "metadata": {"a": "x" * (MAX_METADATA_BYTES + 10)}}]},
+        json={
+            "documents": [
+                {"title": "m", "text": "hi", "metadata": {"a": "x" * (MAX_METADATA_BYTES + 10)}}
+            ]
+        },
     )
     assert resp.status_code == 422
 
@@ -244,7 +248,11 @@ async def test_concurrent_ingest_and_query_keep_store_coherent(client):
     async def ingest(i: int):
         return await client.post(
             "/ingest",
-            json={"documents": [{"id": f"doc{i}", "title": f"T{i}", "text": f"alpha{i} beta{i} gamma{i}. " * 20}]},
+            json={
+                "documents": [
+                    {"id": f"doc{i}", "title": f"T{i}", "text": f"alpha{i} beta{i} gamma{i}. " * 20}
+                ]
+            },
         )
 
     async def query(i: int):

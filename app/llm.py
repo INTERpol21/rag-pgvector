@@ -9,8 +9,9 @@ on ``http://localhost:8080/v1``.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import httpx
 
@@ -54,7 +55,7 @@ def build_messages(question: str, chunks: Sequence[ScoredChunk]) -> list[dict]:
 @dataclass(frozen=True)
 class LLMResult:
     answer: str
-    usage: Optional[dict] = None
+    usage: dict | None = None
 
 
 @runtime_checkable

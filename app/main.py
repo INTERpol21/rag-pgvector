@@ -7,7 +7,6 @@ import json
 import secrets
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -45,7 +44,7 @@ MAX_METADATA_BYTES = 64 * 1024  # 64 KB of JSON-serialised metadata per document
 
 
 class DocumentIn(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
     metadata: dict = Field(default_factory=dict)
@@ -73,7 +72,7 @@ class IngestRequest(BaseModel):
     documents: list[DocumentIn] = Field(min_length=1, max_length=MAX_DOCS_PER_REQUEST)
 
     @model_validator(mode="after")
-    def _no_duplicate_ids(self) -> "IngestRequest":
+    def _no_duplicate_ids(self) -> IngestRequest:
         # Two documents sharing an explicit id in one batch is ambiguous: the
         # second would silently overwrite the first's chunks while chunks_indexed
         # still counted both. Reject it so ingest stays deterministic.
@@ -91,7 +90,7 @@ class IngestResponse(BaseModel):
 
 def content_hash(title: str, text: str) -> str:
     """Stable identity of a document's indexed content (title + text)."""
-    return hashlib.sha256(f"{title}\n{text}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{title}\n{text}".encode()).hexdigest()
 
 
 class QueryRequest(BaseModel):
@@ -126,7 +125,7 @@ class QueryResponse(BaseModel):
     answer: str
     citations: list[CitationOut]
     retrieved: list[RetrievedChunkOut]
-    usage: Optional[dict] = None
+    usage: dict | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -135,12 +134,12 @@ class QueryResponse(BaseModel):
 
 
 def create_app(
-    settings: Optional[Settings] = None,
+    settings: Settings | None = None,
     *,
-    store: Optional[VectorStore] = None,
-    embedder: Optional[Embedder] = None,
-    llm: Optional[LLM] = None,
-    reranker: Optional[Reranker] = None,
+    store: VectorStore | None = None,
+    embedder: Embedder | None = None,
+    llm: LLM | None = None,
+    reranker: Reranker | None = None,
 ) -> FastAPI:
     """Build the application.
 

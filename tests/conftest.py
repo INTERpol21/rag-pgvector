@@ -7,7 +7,6 @@ from app.main import create_app
 from app.settings import Settings
 from app.store import MemoryVectorStore
 
-
 # The API requires a bearer key (RAG_API_KEYS); every test client sends the
 # default one. Auth-specific tests build their own clients without it.
 API_KEY = "demo-key"

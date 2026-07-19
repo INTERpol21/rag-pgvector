@@ -13,7 +13,8 @@ OpenAI-compatible chat client).
 from __future__ import annotations
 
 import re
-from typing import Optional, Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from app.llm import LLMResult, OpenAIChatLLM
 from app.store import ScoredChunk
@@ -71,7 +72,7 @@ RERANK_SYSTEM_PROMPT = (
 _SCORE_LINE_RE = re.compile(r"^\s*\[?(\d+)\]?\s*[:.\-]\s*(\d+(?:\.\d+)?)\s*$")
 
 
-def parse_scores(reply: str, n_candidates: int) -> Optional[dict[int, float]]:
+def parse_scores(reply: str, n_candidates: int) -> dict[int, float] | None:
     """Parse ``<number>: <score>`` lines into {0-based index: score}.
 
     Out-of-range indices and out-of-range scores are dropped; duplicates keep
@@ -129,7 +130,7 @@ class LLMReranker:
         return [chunk for _, chunk in indexed]
 
 
-def build_reranker(settings, llm: object = None) -> Optional[Reranker]:
+def build_reranker(settings, llm: object = None) -> Reranker | None:
     """Instantiate the reranker selected by ``RERANKER`` (None = stage off).
 
     For ``llm`` mode the app's chat client is reused when it is

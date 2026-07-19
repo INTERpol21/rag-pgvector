@@ -40,7 +40,7 @@ def test_no_content_loss_and_exact_overlap():
     # every chunk is a real substring
     assert all(c in text for c in chunks)
     # consecutive chunks share exactly OVERLAP characters
-    for a, b in zip(chunks, chunks[1:]):
+    for a, b in zip(chunks, chunks[1:], strict=False):
         assert a[-OVERLAP:] == b[:OVERLAP]
     # dropping each chunk's overlap prefix reconstructs the original text
     rebuilt = chunks[0] + "".join(c[OVERLAP:] for c in chunks[1:])
