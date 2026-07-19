@@ -61,6 +61,96 @@ class HashingEmbedder:
         return [self._embed_one(t) for t in texts]
 
 
+# Curated synonym clusters for the semantic mock. Every token in a group maps
+# to the *same* deterministic basis direction, so members ("car"/"automobile")
+# come out near-identical while different groups are near-orthogonal. This is
+# still a toy — it only knows the words listed here — but it gives the offline
+# stack a taste of the synonym-awareness real embeddings have, which pure
+# feature hashing (HashingEmbedder) fundamentally cannot.
+_CONCEPT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("vehicle", ("car", "cars", "automobile", "automobiles", "vehicle",
+                 "vehicles", "sedan", "truck", "motor")),
+    ("finance", ("money", "cash", "payment", "payments", "invoice", "invoices",
+                 "billing", "cost", "costs", "price", "pricing")),
+    ("database", ("postgres", "postgresql", "database", "databases", "sql",
+                  "pgvector", "index", "indexes", "query", "queries", "table")),
+    ("coffee", ("espresso", "coffee", "latte", "cappuccino", "crema", "grind",
+                "brew", "roast", "beans")),
+    ("gateway", ("gateway", "http", "request", "requests", "streaming", "token",
+                 "tokens", "rate", "limiter", "throttle")),
+    ("weather", ("rain", "storm", "sunny", "cloud", "clouds", "forecast",
+                 "temperature", "humid", "snow")),
+)
+# token -> concept key, built once at import time.
+_TOKEN_CONCEPT: dict[str, str] = {
+    token: concept for concept, tokens in _CONCEPT_GROUPS for token in tokens
+}
+
+
+def _seed_vector(seed: str, dim: int) -> list[float]:
+    """Deterministic, roughly-isotropic unit vector derived from ``seed``.
+
+    md5 is streamed (``seed:counter``) into signed floats in ``[-0.5, 0.5]``,
+    then L2-normalized. Two different seeds give near-orthogonal vectors; the
+    same seed always gives the same vector, across processes.
+    """
+    vals: list[float] = []
+    counter = 0
+    while len(vals) < dim:
+        digest = hashlib.md5(f"{seed}:{counter}".encode()).digest()
+        for j in range(0, len(digest), 2):
+            vals.append(int.from_bytes(digest[j : j + 2], "big") / 65535.0 - 0.5)
+        counter += 1
+    vec = vals[:dim]
+    norm = math.sqrt(sum(v * v for v in vec))
+    return [v / norm for v in vec] if norm > 0.0 else vec
+
+
+class SemanticMockEmbedder:
+    """Deterministic *synonym-aware* embedder for offline demos and tests.
+
+    Like :class:`HashingEmbedder` it needs no network and is reproducible, but
+    it is a better production stand-in for retrieval: each token contributes its
+    concept's fixed direction (see ``_CONCEPT_GROUPS``), so "car" and
+    "automobile" embed to almost the same vector while "car" and "espresso" are
+    near-orthogonal. Tokens outside the curated vocabulary fall back to a stable
+    per-token direction (behaving like the hashing embedder for rare words).
+
+    The per-text vector is the L2-normalized sum of its tokens' directions, so
+    the dot product of two embeddings is their cosine similarity — matching the
+    ``vector_cosine_ops`` / ``<=>`` retrieval path.
+    """
+
+    def __init__(self, dim: int = 256) -> None:
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        self.dim = dim
+        self._cache: dict[str, list[float]] = {}
+
+    def _direction(self, token: str) -> list[float]:
+        # Concept members share a seed ("concept:vehicle"); unknown tokens get
+        # their own ("token:<word>"). Cached so repeated tokens are cheap.
+        concept = _TOKEN_CONCEPT.get(token)
+        seed = f"concept:{concept}" if concept else f"token:{token}"
+        vec = self._cache.get(seed)
+        if vec is None:
+            vec = _seed_vector(seed, self.dim)
+            self._cache[seed] = vec
+        return vec
+
+    def _embed_one(self, text: str) -> list[float]:
+        acc = [0.0] * self.dim
+        for token in _TOKEN_RE.findall(text.lower()):
+            direction = self._direction(token)
+            for i, v in enumerate(direction):
+                acc[i] += v
+        norm = math.sqrt(sum(v * v for v in acc))
+        return [v / norm for v in acc] if norm > 0.0 else acc
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self._embed_one(t) for t in texts]
+
+
 class OpenAIEmbedder:
     """Embeddings via an OpenAI-compatible ``/embeddings`` endpoint."""
 
@@ -99,6 +189,8 @@ def build_embedder(settings) -> Embedder:
     backend = settings.embeddings_backend.lower()
     if backend == "hash":
         return HashingEmbedder(dim=settings.embedding_dim)
+    if backend == "semantic":
+        return SemanticMockEmbedder(dim=settings.embedding_dim)
     if backend == "openai":
         return OpenAIEmbedder(
             base_url=settings.openai_base_url,

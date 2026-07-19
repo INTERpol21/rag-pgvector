@@ -8,6 +8,7 @@ on ``http://localhost:8080/v1``.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -27,6 +28,13 @@ SYSTEM_PROMPT = (
 
 NO_CONTEXT_ANSWER = (
     "I don't know — no relevant context was retrieved for this question."
+)
+
+# Distinct from NO_CONTEXT_ANSWER: chunks *were* retrieved but none of them are
+# relevant to the question. A production RAG system abstains here rather than
+# summarising an off-topic passage; the grounded mock emulates that guardrail.
+NOT_IN_SOURCES_ANSWER = (
+    "I couldn't find an answer to that in the provided sources."
 )
 
 
@@ -66,9 +74,28 @@ class LLM(Protocol):
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
+# Common function words that carry no topical signal. Grounding relevance must
+# ignore these, otherwise a shared "the"/"does" between an off-topic question and
+# any passage would count as a match and defeat honest abstention.
+_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "are", "was", "with", "that", "this", "from",
+        "has", "have", "had", "use", "uses", "used", "what", "which", "does",
+        "did", "how", "why", "who", "whom", "where", "when", "into", "than",
+        "then", "its", "you", "your", "our", "their", "them", "they", "she",
+        "his", "her", "not", "but", "all", "any", "can", "will", "may", "about",
+        "over", "under", "such", "some", "these", "those", "there", "here",
+    }
+)
+
 
 def _tokens(text: str) -> set[str]:
     return {t for t in _WORD_RE.findall(text.lower()) if len(t) > 2}
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Topical tokens only: drop short words and common stopwords."""
+    return _tokens(text) - _STOPWORDS
 
 
 def _best_sentence(question: str, content: str, max_chars: int = 280) -> str:
@@ -81,6 +108,21 @@ def _best_sentence(question: str, content: str, max_chars: int = 280) -> str:
     if len(best) > max_chars:
         best = best[:max_chars].rsplit(" ", 1)[0] + "…"
     return best
+
+
+def _approx_tokens(text: str) -> int:
+    """Rough subword-token estimate: ~1.3 tokens per whitespace word.
+
+    Real BPE tokenizers split on subwords and punctuation, so a bare word count
+    understates usage. The 1.3 factor keeps the mock's ``usage`` numbers in the
+    same ballpark as a production tokenizer without pulling in ``tiktoken``.
+    """
+    words = len(text.split())
+    return math.ceil(words * 1.3) if words else 0
+
+
+def _prompt_tokens(messages: Sequence[dict]) -> int:
+    return _approx_tokens("\n".join(m["content"] for m in messages))
 
 
 class MockLLM:
@@ -114,6 +156,79 @@ class MockLLM:
             "total_tokens": prompt_tokens + len(answer.split()),
         }
         return LLMResult(answer=answer, usage=usage)
+
+
+class GroundedMockLLM:
+    """Production-emulating offline LLM: grounded extractive RAG with guardrails.
+
+    Where :class:`MockLLM` always answers from the top chunks, this stand-in
+    reproduces the two behaviours a real retrieval-augmented model is judged on,
+    so tests can exercise them without a model or network:
+
+    * **Grounding.** It answers only from retrieved chunks that actually share
+      wording with the question, and cites each *used* chunk with a ``[n]`` that
+      is always a valid 1-based position in the retrieved list. It can never
+      emit a hallucinated citation, and chunks it did not use are never cited —
+      so :func:`app.services.citations.extract_citations` resolves every ``[n]``.
+
+    * **Honest abstention.** If chunks were retrieved but none are relevant to
+      the question (they share no meaningful content word), it returns the
+      distinct :data:`NOT_IN_SOURCES_ANSWER` instead of summarising an off-topic
+      passage. An empty retrieval yields :data:`NO_CONTEXT_ANSWER`, as before.
+
+    ``usage`` approximates a real tokenizer (~1.3 subword tokens per word) and
+    always carries ``prompt_tokens``/``completion_tokens``/``total_tokens``.
+    Fully deterministic and offline; select it with ``LLM_BACKEND=grounded``.
+    """
+
+    # How many relevant chunks to weave into the answer (one [n] citation each).
+    max_chunks = 3
+    # Minimum shared content words for a chunk to count as relevant to the
+    # question. 1 keeps recall high while still rejecting genuinely off-topic hits.
+    min_overlap = 1
+
+    def _relevant(
+        self, question: str, chunks: Sequence[ScoredChunk]
+    ) -> list[tuple[int, ScoredChunk]]:
+        """Retrieved chunks (with their 1-based index) that overlap the question.
+
+        Order is preserved from ``chunks`` so the highest-ranked relevant chunk
+        is cited first; the index is the chunk's position in the retrieved list,
+        which is exactly what the citation resolver expects.
+        """
+        q_tokens = _content_tokens(question)
+        hits: list[tuple[int, ScoredChunk]] = []
+        for i, chunk in enumerate(chunks, start=1):
+            if len(q_tokens & _tokens(chunk.content)) >= self.min_overlap:
+                hits.append((i, chunk))
+        return hits
+
+    async def answer(self, question: str, chunks: Sequence[ScoredChunk]) -> LLMResult:
+        messages = build_messages(question, chunks)
+        prompt_tokens = _prompt_tokens(messages)
+
+        def _result(answer: str) -> LLMResult:
+            completion_tokens = _approx_tokens(answer)
+            return LLMResult(
+                answer=answer,
+                usage={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+            )
+
+        if not chunks:
+            return _result(NO_CONTEXT_ANSWER)
+        relevant = self._relevant(question, chunks)[: self.max_chunks]
+        if not relevant:
+            # Retrieval returned rows, but none answer the question -> abstain.
+            return _result(NOT_IN_SOURCES_ANSWER)
+        parts = [
+            f"{_best_sentence(question, chunk.content).rstrip('.')} [{i}]."
+            for i, chunk in relevant
+        ]
+        return _result(" ".join(parts))
 
 
 class OpenAIChatLLM:
@@ -168,6 +283,8 @@ def build_llm(settings) -> LLM:
     backend = settings.llm_backend.lower()
     if backend == "mock":
         return MockLLM()
+    if backend == "grounded":
+        return GroundedMockLLM()
     if backend == "openai":
         return OpenAIChatLLM(
             base_url=settings.llm_base_url,
