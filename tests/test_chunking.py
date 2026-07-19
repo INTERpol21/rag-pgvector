@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from app.chunking import chunk_text
+from app.services.chunking import chunk_text
 
 SIZE = 200
 OVERLAP = 40

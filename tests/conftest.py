@@ -1,11 +1,11 @@
 import httpx
 import pytest
 
-from app.embeddings import HashingEmbedder
-from app.llm import MockLLM
+from app.core.settings import Settings
+from app.db.store import MemoryVectorStore
 from app.main import create_app
-from app.settings import Settings
-from app.store import MemoryVectorStore
+from app.services.embeddings import HashingEmbedder
+from app.services.llm import MockLLM
 
 # The API requires a bearer key (RAG_API_KEYS); every test client sends the
 # default one. Auth-specific tests build their own clients without it.

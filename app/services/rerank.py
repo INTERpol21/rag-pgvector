@@ -16,8 +16,8 @@ import re
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from app.llm import LLMResult, OpenAIChatLLM
-from app.store import ScoredChunk
+from app.db.store import ScoredChunk
+from app.services.llm import LLMResult, OpenAIChatLLM
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 

@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from app.store import (
+from app.db.store import (
     SEARCH_SQL,
     ChunkRecord,
     DocumentRecord,

@@ -6,7 +6,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from app.store import ScoredChunk
+from app.db.store import ScoredChunk
 
 _REF_RE = re.compile(r"\[(\d+)\]")
 

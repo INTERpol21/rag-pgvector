@@ -2,16 +2,16 @@ import asyncio
 
 import httpx
 
-from app.errors import ProviderError
-from app.main import (
+from app.core.errors import ProviderError
+from app.core.settings import Settings
+from app.main import create_app
+from app.schemas import (
     MAX_DOCS_PER_REQUEST,
     MAX_METADATA_BYTES,
     MAX_QUESTION_CHARS,
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
-    create_app,
 )
-from app.settings import Settings
 
 
 async def test_healthz(client):

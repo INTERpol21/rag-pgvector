@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
-from app.errors import ProviderError
+from app.core.errors import ProviderError
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 

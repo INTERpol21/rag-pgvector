@@ -15,8 +15,8 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
-from app.errors import ProviderError
-from app.store import ScoredChunk
+from app.core.errors import ProviderError
+from app.db.store import ScoredChunk
 
 SYSTEM_PROMPT = (
     "You are a retrieval-augmented assistant. Answer the question using ONLY "

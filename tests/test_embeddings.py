@@ -1,6 +1,6 @@
 import math
 
-from app.embeddings import HashingEmbedder
+from app.services.embeddings import HashingEmbedder
 
 
 def _dot(a, b):

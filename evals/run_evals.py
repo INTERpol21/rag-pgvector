@@ -31,18 +31,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # allow `python evals/run_evals.py` from repo root
     sys.path.insert(0, str(ROOT))
 
-from app.chunking import chunk_text  # noqa: E402
-from app.citations import extract_citations  # noqa: E402
-from app.embeddings import HashingEmbedder  # noqa: E402
-from app.errors import ProviderError  # noqa: E402
-from app.llm import LLM, MockLLM  # noqa: E402
-from app.settings import Settings  # noqa: E402
-from app.store import (  # noqa: E402
+from app.core.errors import ProviderError  # noqa: E402
+from app.core.settings import Settings  # noqa: E402
+from app.db.store import (  # noqa: E402
     ChunkRecord,
     DocumentRecord,
     MemoryVectorStore,
     search_with_mode,
 )
+from app.services.chunking import chunk_text  # noqa: E402
+from app.services.citations import extract_citations  # noqa: E402
+from app.services.embeddings import HashingEmbedder  # noqa: E402
+from app.services.llm import LLM, MockLLM  # noqa: E402
 
 GOLDEN_PATH = ROOT / "evals" / "golden.jsonl"
 DATA_DIR = ROOT / "data"

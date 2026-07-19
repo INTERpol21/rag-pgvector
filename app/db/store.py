@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol, runtime_checkable
 
-from app.migrations import (
+from app.db.migrations import (
     CREATE_MIGRATIONS_TABLE_SQL,
     IS_APPLIED_SQL,
     RECORD_APPLIED_SQL,
