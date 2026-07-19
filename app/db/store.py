@@ -316,10 +316,10 @@ class MemoryVectorStore:
 
 SEARCH_SQL = """
 SELECT c.id, c.document_id, d.title, c.content, c.ord,
-       1 - (c.embedding <=> $1) AS score
+       1 - (c.embedding <=> $1) AS score, d.source, d.priority
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
-ORDER BY c.embedding <=> $1
+ORDER BY c.embedding <=> $1, c.id
 LIMIT $2
 """
 
@@ -328,7 +328,8 @@ LIMIT $2
 # websearch_to_tsquery never raises on user input.
 KEYWORD_SEARCH_SQL = """
 SELECT c.id, c.document_id, d.title, c.content, c.ord,
-       ts_rank_cd(c.content_tsv, websearch_to_tsquery('simple', $1)) AS score
+       ts_rank_cd(c.content_tsv, websearch_to_tsquery('simple', $1)) AS score,
+       d.source, d.priority
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
 WHERE c.content_tsv @@ websearch_to_tsquery('simple', $1)
@@ -337,11 +338,12 @@ LIMIT $2
 """
 
 UPSERT_DOCUMENT_SQL = """
-INSERT INTO documents (id, title, metadata, content_hash)
-VALUES ($1, $2, $3::jsonb, $4)
+INSERT INTO documents (id, title, metadata, content_hash, source, priority, owner)
+VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE
     SET title = EXCLUDED.title, metadata = EXCLUDED.metadata,
-        content_hash = EXCLUDED.content_hash
+        content_hash = EXCLUDED.content_hash, source = EXCLUDED.source,
+        priority = EXCLUDED.priority, owner = EXCLUDED.owner
 """
 
 DELETE_CHUNKS_SQL = "DELETE FROM chunks WHERE document_id = $1"
@@ -412,7 +414,7 @@ class PgVectorStore:
         return self._pool
 
     async def ensure_schema(self) -> None:
-        """Apply pending migrations, tracked in ``schema_migrations``."""
+        """Apply pending migrations, tracked in ``schema_migrations``, then guard dim."""
         pool = self._require_pool()
         migrations = load_migrations()
         async with pool.acquire() as conn:
@@ -423,6 +425,25 @@ class PgVectorStore:
                 async with conn.transaction():
                     await conn.execute(migration.sql_for(self.dim))
                     await conn.execute(RECORD_APPLIED_SQL, migration.version)
+            await self._assert_dimension(conn)
+
+    async def _assert_dimension(self, conn) -> None:
+        """Fail fast if the embedder's dim disagrees with the stored column.
+
+        Reconnecting an existing DB with a different ``EMBEDDING_DIM`` / embedder
+        would otherwise fail silently on every insert (dimension mismatch). For a
+        pgvector column, ``atttypmod`` holds the declared dimension.
+        """
+        stored = await conn.fetchval(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'"
+        )
+        if stored is not None and stored != self.dim:
+            raise RuntimeError(
+                f"embedding dimension mismatch: this store expects vector({self.dim}) "
+                f"but chunks.embedding is vector({stored}). The embedder/EMBEDDING_DIM "
+                f"changed against an existing database — reindex into a fresh schema."
+            )
 
     async def upsert(self, document: DocumentRecord, chunks: Sequence[ChunkRecord]) -> None:
         import json
@@ -438,6 +459,9 @@ class PgVectorStore:
                     document.title,
                     json.dumps(document.metadata),
                     document.content_hash,
+                    document.source,
+                    document.priority,
+                    document.owner,
                 )
                 await conn.execute(DELETE_CHUNKS_SQL, document.id)
                 await conn.executemany(
@@ -467,6 +491,8 @@ class PgVectorStore:
                 content=r["content"],
                 ord=r["ord"],
                 score=float(r["score"]),
+                source=r["source"],
+                priority=r["priority"],
             )
             for r in rows
         ]

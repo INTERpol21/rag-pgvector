@@ -8,6 +8,12 @@ from app.db.store import (
     DocumentRecord,
     PgVectorStore,
     normalize_dsn,
+    search_with_mode,
+)
+
+_INTEGRATION = pytest.mark.skipif(
+    not os.getenv("DATABASE_URL"),
+    reason="integration test requires a live Postgres with pgvector (set DATABASE_URL)",
 )
 
 
@@ -37,10 +43,69 @@ def test_schema_sql_and_lazy_construction():
         store._require_pool()
 
 
-@pytest.mark.skipif(
-    not os.getenv("DATABASE_URL"),
-    reason="integration test requires a live Postgres with pgvector (set DATABASE_URL)",
-)
+@_INTEGRATION
+async def test_local_first_boost_and_strict_filter_on_pgvector():
+    """Local docs outrank web at equal similarity; strict mode excludes web."""
+    store = PgVectorStore(os.environ["DATABASE_URL"], dim=4)
+    await store.connect()
+    try:
+        await store.ensure_schema()
+        # A distinct axis from the roundtrip test (which uses [1,0,0,0]) so these
+        # rows don't collide in the shared integration DB; identical between the
+        # two docs so provenance, not similarity, decides the order.
+        emb = [0.0, 0.0, 1.0, 0.0]
+        await store.upsert(
+            DocumentRecord(id="lf-web", title="Web", source="web", priority=0),
+            [ChunkRecord("lf-web:0", "lf-web", 0, "pgvector cosine distance", emb)],
+        )
+        await store.upsert(
+            DocumentRecord(id="lf-loc", title="Local", source="local", priority=100),
+            [ChunkRecord("lf-loc:0", "lf-loc", 0, "pgvector cosine distance", emb)],
+        )
+
+        boosted = await search_with_mode(store, "vector", emb, "pgvector cosine", 10)
+        mine = [c for c in boosted if c.chunk_id in ("lf-web:0", "lf-loc:0")]
+        assert mine[0].source == "local"  # priority boost wins
+
+        strict = await search_with_mode(
+            store, "vector", emb, "pgvector cosine", 10, sources={"local"}
+        )
+        assert all(c.source == "local" for c in strict)
+        assert any(c.chunk_id == "lf-loc:0" for c in strict)
+        assert not any(c.chunk_id == "lf-web:0" for c in strict)
+    finally:
+        await store.close()
+
+
+@_INTEGRATION
+async def test_dimension_guard_rejects_mismatch():
+    """Reconnecting with a different embedding dim fails fast, not on every insert."""
+    url = os.environ["DATABASE_URL"]
+    probe = PgVectorStore(url, dim=4)
+    await probe.connect()
+    try:
+        pool = probe._require_pool()
+        async with pool.acquire() as conn:
+            stored = await conn.fetchval(
+                "SELECT atttypmod FROM pg_attribute "
+                "WHERE attrelid = to_regclass('chunks') AND attname = 'embedding'"
+            )
+        if stored is None:  # fresh DB: create the schema at dim 4
+            await probe.ensure_schema()
+            stored = 4
+    finally:
+        await probe.close()
+
+    mismatched = PgVectorStore(url, dim=stored + 7)
+    await mismatched.connect()
+    try:
+        with pytest.raises(RuntimeError, match="dimension mismatch"):
+            await mismatched.ensure_schema()
+    finally:
+        await mismatched.close()
+
+
+@_INTEGRATION
 async def test_pgvector_roundtrip_integration():
     store = PgVectorStore(os.environ["DATABASE_URL"], dim=4)
     await store.connect()
