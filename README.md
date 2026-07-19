@@ -20,7 +20,7 @@ flowchart LR
         A["documents"] --> B["chunk<br/>800 chars / 150 overlap"] --> C["embed<br/>hash 256-d | text-embedding-3-small"]
     end
     subgraph query["POST /query"]
-        Q["question"] --> S["embed + cosine top-k"] --> P["prompt: numbered context,<br/>answer only from it"] --> L["LLM<br/>mock | llm-gateway"] --> R["answer + citations"]
+        Q["question"] --> S["embed + hybrid top-k<br/>vector + keyword (RRF)"] --> P["prompt: numbered context,<br/>answer only from it"] --> L["LLM<br/>mock | llm-gateway"] --> R["answer + citations"]
     end
     C --> V[("vector store<br/>memory | pgvector")] --> S
 ```
@@ -29,18 +29,22 @@ flowchart LR
 
 ```bash
 pip install -r requirements.txt
-uvicorn app.main:create_app --factory --port 8081   # offline: no Postgres, no keys
+uvicorn app.main:create_app --factory --port 8081   # offline: no Postgres, no upstream API keys
 ```
+
+`/ingest`, `/query` and `/stats` require a bearer token (`Authorization: Bearer <key>`); the default accepted key is `demo-key`, override with `RAG_API_KEYS` (comma-separated). Only `/healthz` is unauthenticated.
 
 Full mode: `docker compose up --build` runs the API with `STORE_BACKEND=pgvector` against `pgvector/pgvector:pg16` on :5433 (schema created on startup). For real synthesis, point `LLM_BACKEND=openai LLM_BASE_URL=http://localhost:8080/v1` at the sibling llm-gateway. All knobs: `.env.example`.
 
 ## API
 
 ```bash
-curl -s localhost:8081/ingest -X POST -H 'content-type: application/json' \
+curl -s localhost:8081/ingest -X POST \
+  -H 'content-type: application/json' -H 'Authorization: Bearer demo-key' \
   -d '{"documents": [{"id": "pgvector_internals", "title": "pgvector Internals", "text": "..."}]}'
 
-curl -s localhost:8081/query -X POST -H 'content-type: application/json' \
+curl -s localhost:8081/query -X POST \
+  -H 'content-type: application/json' -H 'Authorization: Bearer demo-key' \
   -d '{"question": "Which pgvector operator matches cosine?", "top_k": 4}'
 ```
 
@@ -68,8 +72,11 @@ Runs the full pipeline over `evals/golden.jsonl` (12 questions on the 4-note dem
 
 | Variable | Default | Notes |
 |---|---|---|
+| `RAG_API_KEYS` | `demo-key` | comma-separated bearer tokens for `/ingest`, `/query`, `/stats` |
 | `STORE_BACKEND` | `memory` | `memory` or `pgvector` (`DATABASE_URL` for the latter) |
 | `EMBEDDINGS_BACKEND` | `hash` | `hash` (256-d, deterministic) or `openai` |
+| `SEARCH_MODE` | `hybrid` | `hybrid` (RRF of vector + keyword) or `vector` (cosine-only) |
+| `RERANKER` | `none` | `none`, `mock` or `llm` |
 | `LLM_BACKEND` | `mock` | `mock` or `openai`; `LLM_BASE_URL` defaults to the gateway on :8080 |
 | `JUDGE_BACKEND` | `mock` | judge used by the evals harness |
 
