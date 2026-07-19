@@ -50,6 +50,11 @@ class DocumentRecord:
     title: str
     metadata: dict = field(default_factory=dict)
     content_hash: str = ""  # sha256 over title+text; "" = unknown (pre-hash rows)
+    # Local-first provenance: your own documents default to source="local" and a
+    # high priority so they outrank web/other in retrieval (see search_with_mode).
+    source: str = "local"  # local | web | other
+    priority: int = 0  # higher = more authoritative; local ingests default higher
+    owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,8 @@ class ScoredChunk:
     content: str
     ord: int
     score: float  # cosine similarity, BM25 or RRF score depending on the path
+    source: str = "local"  # provenance tier, carried from the document
+    priority: int = 0
 
 
 @runtime_checkable
@@ -141,11 +148,32 @@ async def search_with_mode(
     embedding: Sequence[float],
     query_text: str,
     top_k: int,
+    *,
+    sources: set[str] | None = None,
+    priority_boost: bool = True,
 ) -> list[ScoredChunk]:
-    """Dispatch retrieval on ``SEARCH_MODE`` (``vector`` | ``hybrid``)."""
+    """Dispatch retrieval on ``SEARCH_MODE`` (``vector`` | ``hybrid``), then apply
+    local-first post-processing.
+
+    ``sources`` (when given) keeps only chunks from those provenance tiers — this
+    is how the strict "only my data" mode is enforced. ``priority_boost`` re-orders
+    the survivors so higher-priority (local) documents outrank lower-priority (web)
+    ones regardless of raw similarity. When either is active we pull a larger
+    candidate pool so filtering does not starve the result.
+    """
+    want_pool = sources is not None or priority_boost
+    fetch_k = candidate_pool(top_k) if want_pool else top_k
     if mode == "hybrid":
-        return await store.search_hybrid(embedding, query_text, top_k)
-    return await store.search(embedding, top_k)
+        hits = await store.search_hybrid(embedding, query_text, fetch_k)
+    else:
+        hits = await store.search(embedding, fetch_k)
+
+    if sources is not None:
+        hits = [h for h in hits if h.source in sources]
+    if priority_boost:
+        # Stable: higher priority first, then original relevance, then id.
+        hits = sorted(hits, key=lambda h: (-h.priority, -h.score, h.chunk_id))
+    return hits[: max(top_k, 0)]
 
 
 # --------------------------------------------------------------------------- #
@@ -223,6 +251,8 @@ class MemoryVectorStore:
                 content=c.content,
                 ord=c.ord,
                 score=_cosine(embedding, c.embedding),
+                source=self._documents[c.document_id].source,
+                priority=self._documents[c.document_id].priority,
             )
             for c in self._chunks.values()
         ]
@@ -257,6 +287,8 @@ class MemoryVectorStore:
                         content=chunk.content,
                         ord=chunk.ord,
                         score=score,
+                        source=self._documents[chunk.document_id].source,
+                        priority=self._documents[chunk.document_id].priority,
                     )
                 )
         scored.sort(key=lambda s: (-s.score, s.chunk_id))

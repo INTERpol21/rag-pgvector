@@ -38,7 +38,13 @@ async def ingest(payload: IngestRequest, request: Request) -> IngestResponse:
             continue
         pieces = chunk_text(doc.text, st.chunk_size, st.chunk_overlap)
         record = DocumentRecord(
-            id=doc_id, title=doc.title, metadata=doc.metadata, content_hash=doc_hash
+            id=doc_id,
+            title=doc.title,
+            metadata=doc.metadata,
+            content_hash=doc_hash,
+            source=doc.source,
+            priority=doc.priority,
+            owner=doc.owner,
         )
         docs_with_chunks.append((record, pieces))
         all_texts.extend(pieces)

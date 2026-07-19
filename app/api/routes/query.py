@@ -18,7 +18,12 @@ async def query(payload: QueryRequest, request: Request) -> QueryResponse:
     st = state.settings
     query_vec = (await state.embedder.embed([payload.question]))[0]
     retrieved = await search_with_mode(
-        state.store, st.search_mode, query_vec, payload.question, payload.top_k
+        state.store,
+        st.search_mode,
+        query_vec,
+        payload.question,
+        payload.top_k,
+        sources=set(payload.sources) if payload.sources else None,
     )
     if state.reranker is not None:
         retrieved = await state.reranker.rerank(payload.question, retrieved)
@@ -34,6 +39,7 @@ async def query(payload: QueryRequest, request: Request) -> QueryResponse:
                 title=c.title,
                 ord=c.ord,
                 score=c.score,
+                source=c.source,
             )
             for c in retrieved
         ],

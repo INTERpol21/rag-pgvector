@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+Source = Literal["local", "web", "other"]
+# Local ingests default to a high priority so your own data outranks web/other.
+DEFAULT_LOCAL_PRIORITY = 100
 
 # Input bounds. These keep a single request's memory/compute footprint finite
 # so hostile payloads (a 2 MB document, a 500-document batch, a 50 KB question)
@@ -28,6 +33,11 @@ class DocumentIn(BaseModel):
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
     metadata: dict = Field(default_factory=dict)
+    # Local-first provenance. Ingested documents are your own data by default:
+    # source="local" + a high priority so they outrank web/other in retrieval.
+    source: Source = "local"
+    priority: int = Field(default=DEFAULT_LOCAL_PRIORITY, ge=0, le=1000)
+    owner: str | None = Field(default=None, max_length=MAX_TITLE_CHARS)
 
     @field_validator("title", "text")
     @classmethod
@@ -71,6 +81,9 @@ class IngestResponse(BaseModel):
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     top_k: int = Field(default=4, ge=1, le=20)
+    # Local-first: restrict retrieval to these provenance tiers. None = no filter
+    # (all sources, local still boosted). ["local"] enforces "only my data".
+    sources: list[Source] | None = None
 
     @field_validator("question")
     @classmethod
@@ -86,6 +99,7 @@ class CitationOut(BaseModel):
     chunk_id: str
     snippet: str
     score: float
+    source: str = "local"
 
 
 class RetrievedChunkOut(BaseModel):
@@ -94,6 +108,7 @@ class RetrievedChunkOut(BaseModel):
     title: str
     ord: int
     score: float
+    source: str = "local"
 
 
 class QueryResponse(BaseModel):
