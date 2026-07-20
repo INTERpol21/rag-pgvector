@@ -10,6 +10,10 @@ on:
     branches: [main]
     paths:
       - pyproject.toml
+  # Manual run: the paths filter above only fires when the manifest itself
+  # changes, so the very first tag — and any release cut from a commit that did
+  # not touch the version — needs this.
+  workflow_dispatch:
 
 # A second push while this is running would race on creating the same tag.
 concurrency:
