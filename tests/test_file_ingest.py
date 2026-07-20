@@ -80,21 +80,21 @@ QUESTION = "pgvector cosine distance operator vector_cosine_ops"
 async def test_ingest_file_txt_is_indexed_and_local(client):
     body = (
         await client.post(
-            "/ingest/file",
+            "/v1/ingest/file",
             files={"file": ("notes.txt", QUESTION.encode(), "text/plain")},
             data={"source": "local"},
         )
     ).json()
     assert body["chunks_indexed"] >= 1
 
-    result = (await client.post("/query", json={"question": QUESTION, "top_k": 4})).json()
+    result = (await client.post("/v1/query", json={"question": QUESTION, "top_k": 4})).json()
     assert result["retrieved"], result
     assert result["retrieved"][0]["source"] == "local"
 
 
 async def test_ingest_file_docx_is_indexed(client):
     resp = await client.post(
-        "/ingest/file",
+        "/v1/ingest/file",
         files={
             "file": (
                 "notes.docx",
@@ -109,7 +109,7 @@ async def test_ingest_file_docx_is_indexed(client):
 
 async def test_ingest_file_unsupported_type_returns_415(client):
     resp = await client.post(
-        "/ingest/file",
+        "/v1/ingest/file",
         files={"file": ("evil.exe", b"MZ\x00binary", "application/octet-stream")},
     )
     assert resp.status_code == 415
@@ -117,7 +117,7 @@ async def test_ingest_file_unsupported_type_returns_415(client):
 
 async def test_ingest_file_empty_text_returns_422(client):
     resp = await client.post(
-        "/ingest/file",
+        "/v1/ingest/file",
         files={"file": ("blank.txt", b"   \n  \t ", "text/plain")},
     )
     assert resp.status_code == 422
@@ -131,7 +131,7 @@ async def test_ingest_file_oversized_text_returns_413_not_500(client):
     """
     big = ("word " * 250_000).encode()  # ~1.25 MB > MAX_TEXT_CHARS
     resp = await client.post(
-        "/ingest/file", files={"file": ("big.txt", big, "text/plain")}
+        "/v1/ingest/file", files={"file": ("big.txt", big, "text/plain")}
     )
     assert resp.status_code == 413
 
@@ -139,7 +139,7 @@ async def test_ingest_file_oversized_text_returns_413_not_500(client):
 async def test_ingest_file_overlong_filename_title_returns_422_not_500(client):
     """A pathologically long filename (title > limit) is a 422, not a 500."""
     resp = await client.post(
-        "/ingest/file",
+        "/v1/ingest/file",
         files={"file": ("x" * 2000 + ".txt", b"real content here", "text/plain")},
     )
     assert resp.status_code == 422

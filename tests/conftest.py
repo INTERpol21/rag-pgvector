@@ -86,7 +86,7 @@ DOCS = [
 
 @pytest.fixture
 async def ingested_client(client):
-    resp = await client.post("/ingest", json={"documents": DOCS})
+    resp = await client.post("/v1/ingest", json={"documents": DOCS})
     assert resp.status_code == 200, resp.text
     return client
 

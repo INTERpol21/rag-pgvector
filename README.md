@@ -46,9 +46,8 @@ uvicorn app.main:create_app --factory --port 8081   # offline: no Postgres, no u
 ## API
 
 The API is served under a unified **`/v1`** prefix (aligned with the gateway), so
-the contracts package has one shape across services. The legacy unprefixed paths
-(`/ingest`, `/query`, `/stats`) still resolve during the transition but are hidden
-from the OpenAPI schema — migrate to `/v1`.
+the contracts package has one shape across services. Only `/healthz` is
+unversioned.
 
 ```bash
 # JSON ingest (source defaults to "local")

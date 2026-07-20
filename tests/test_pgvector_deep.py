@@ -160,7 +160,7 @@ async def test_scale_ingest_hybrid_topk_and_reingest_idempotent(fresh_pg_dsn):
     n = 30
     docs = _scale_docs(n)
     async with pg_app(fresh_pg_dsn) as (client, store):
-        resp = await client.post("/ingest", json={"documents": docs})
+        resp = await client.post("/v1/ingest", json={"documents": docs})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["chunks_indexed"] == n and body["skipped"] == 0
@@ -173,14 +173,14 @@ async def test_scale_ingest_hybrid_topk_and_reingest_idempotent(fresh_pg_dsn):
         # Hybrid search returns the right doc on top for several targets.
         for k in (0, 7, 15, 29):
             q = f"needletoken{k:03d}"
-            r = (await client.post("/query", json={"question": q, "top_k": 5})).json()
+            r = (await client.post("/v1/query", json={"question": q, "top_k": 5})).json()
             assert r["retrieved"], r
             assert len(r["retrieved"]) <= 5
             assert r["retrieved"][0]["document_id"] == f"doc{k:03d}", (k, r["retrieved"][0])
 
         # Re-ingest the identical batch: content-hash idempotence skips them all,
         # and the chunk count is unchanged (no silent accumulation).
-        resp = await client.post("/ingest", json={"documents": docs})
+        resp = await client.post("/v1/ingest", json={"documents": docs})
         body = resp.json()
         assert body["skipped"] == n and body["chunks_indexed"] == 0
         stats2 = await store.stats()
@@ -189,12 +189,12 @@ async def test_scale_ingest_hybrid_topk_and_reingest_idempotent(fresh_pg_dsn):
         # Re-ingest one id with NEW content: chunks are replaced, not added.
         changed = {"id": "doc001", "title": "Note 1", "text":
                    "needletoken001 rewritten. Fresh body about hybrid ranking and fusion."}
-        resp = await client.post("/ingest", json={"documents": [changed]})
+        resp = await client.post("/v1/ingest", json={"documents": [changed]})
         assert resp.json()["skipped"] == 0
         stats3 = await store.stats()
         assert stats3["documents"] == n and stats3["chunks"] == chunk_total
         # The rewritten doc is still retrievable by its marker.
-        r = (await client.post("/query", json={"question": "needletoken001", "top_k": 3})).json()
+        r = (await client.post("/v1/query", json={"question": "needletoken001", "top_k": 3})).json()
         assert r["retrieved"][0]["document_id"] == "doc001"
 
 
@@ -217,11 +217,11 @@ async def test_local_first_ranking_and_strict_filter_extended(fresh_pg_dsn):
                  "source": "other", "priority": 50})
 
     async with pg_app(fresh_pg_dsn) as (client, _store):
-        assert (await client.post("/ingest", json={"documents": docs})).status_code == 200
+        assert (await client.post("/v1/ingest", json={"documents": docs})).status_code == 200
         q = "hybrid retrieval vector keyword ranking pgvector"
 
         # No filter: local (highest priority) must occupy the top slots, web last.
-        body = (await client.post("/query", json={"question": q, "top_k": 7})).json()
+        body = (await client.post("/v1/query", json={"question": q, "top_k": 7})).json()
         sources = [c["source"] for c in body["retrieved"]]
         assert sources, body
         # every local appears before every web (priority boost, ties by score/id)
@@ -235,12 +235,12 @@ async def test_local_first_ranking_and_strict_filter_extended(fresh_pg_dsn):
             assert max(local_positions) < other_positions[0] < min(web_positions)
 
         # top_k=3 with 3 local available -> returns only local (boost fills first).
-        body = (await client.post("/query", json={"question": q, "top_k": 3})).json()
+        body = (await client.post("/v1/query", json={"question": q, "top_k": 3})).json()
         assert [c["source"] for c in body["retrieved"]] == ["local", "local", "local"]
 
         # Strict sources=["local"] excludes web AND other across the whole corpus.
         body = (await client.post(
-            "/query", json={"question": q, "top_k": 7, "sources": ["local"]}
+            "/v1/query", json={"question": q, "top_k": 7, "sources": ["local"]}
         )).json()
         assert body["retrieved"]
         assert all(c["source"] == "local" for c in body["retrieved"])
@@ -248,7 +248,7 @@ async def test_local_first_ranking_and_strict_filter_extended(fresh_pg_dsn):
 
         # Mixed filter ["local","other"] keeps both tiers, still excludes web.
         body = (await client.post(
-            "/query", json={"question": q, "top_k": 7, "sources": ["local", "other"]}
+            "/v1/query", json={"question": q, "top_k": 7, "sources": ["local", "other"]}
         )).json()
         got = {c["source"] for c in body["retrieved"]}
         assert got <= {"local", "other"} and "web" not in got
@@ -297,11 +297,11 @@ GROUNDING_CORPUS = [
 async def test_grounded_query_cites_only_retrieved_on_real_db(fresh_pg_dsn):
     async with pg_app(fresh_pg_dsn) as (client, _store):
         assert (await client.post(
-            "/ingest", json={"documents": GROUNDING_CORPUS}
+            "/v1/ingest", json={"documents": GROUNDING_CORPUS}
         )).status_code == 200
 
         body = (await client.post(
-            "/query",
+            "/v1/query",
             json={"question": "Which opclass does pgvector use for cosine distance?", "top_k": 4},
         )).json()
         assert body["answer"] != NOT_IN_SOURCES_ANSWER
@@ -312,7 +312,7 @@ async def test_grounded_query_cites_only_retrieved_on_real_db(fresh_pg_dsn):
 
         # Off-topic question: real retrieval still returns rows, grounded LLM abstains.
         body = (await client.post(
-            "/query", json={"question": "Who won the world cup in 1998?", "top_k": 4}
+            "/v1/query", json={"question": "Who won the world cup in 1998?", "top_k": 4}
         )).json()
         assert body["answer"] == NOT_IN_SOURCES_ANSWER
         assert body["citations"] == []

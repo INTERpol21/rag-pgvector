@@ -72,12 +72,9 @@ def create_app(
 
     app.middleware("http")(request_context)
     register_exception_handlers(app)
-    # Liveness stays unversioned. The API is canonically served under /v1 (unified
-    # with the gateway's /v1 prefix so the contracts package has one shape); the
-    # legacy unprefixed paths keep working during the transition but are hidden
-    # from the OpenAPI schema so clients migrate to /v1.
+    # Liveness stays unversioned; the API is served under a single /v1 prefix
+    # (unified with the gateway so the contracts package has one shape).
     app.include_router(health.router)
     for route_module in (ingest, query, stats):
         app.include_router(route_module.router, prefix="/v1")
-        app.include_router(route_module.router, include_in_schema=False)
     return app

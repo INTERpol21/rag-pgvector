@@ -143,9 +143,9 @@ CORPUS = [
 
 async def test_e2e_grounded_answer_only_cites_retrieved():
     async with _prod_like_client() as client:
-        assert (await client.post("/ingest", json={"documents": CORPUS})).status_code == 200
+        assert (await client.post("/v1/ingest", json={"documents": CORPUS})).status_code == 200
         body = (await client.post(
-            "/query",
+            "/v1/query",
             json={"question": "Which operator does pgvector use for cosine distance?", "top_k": 4},
         )).json()
 
@@ -160,11 +160,11 @@ async def test_e2e_grounded_answer_only_cites_retrieved():
 
 async def test_e2e_abstains_on_off_topic_question():
     async with _prod_like_client() as client:
-        await client.post("/ingest", json={"documents": CORPUS})
+        await client.post("/v1/ingest", json={"documents": CORPUS})
         # A question with no lexical/semantic overlap: retrieval may return rows,
         # but the grounded LLM must refuse rather than cite an unrelated chunk.
         body = (await client.post(
-            "/query",
+            "/v1/query",
             json={"question": "What is the capital of France?", "top_k": 4},
         )).json()
 
@@ -193,9 +193,9 @@ async def test_e2e_hallucinated_indices_are_dropped():
     async with httpx.AsyncClient(
         transport=transport, base_url="http://test", headers=AUTH_HEADERS
     ) as client:
-        await client.post("/ingest", json={"documents": CORPUS})
+        await client.post("/v1/ingest", json={"documents": CORPUS})
         body = (await client.post(
-            "/query", json={"question": "pgvector cosine operator", "top_k": 2}
+            "/v1/query", json={"question": "pgvector cosine operator", "top_k": 2}
         )).json()
 
     # [7] and [99] are hallucinated (only <=2 chunks retrieved) and dropped;
