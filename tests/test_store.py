@@ -1,4 +1,4 @@
-from app.store import ChunkRecord, DocumentRecord, MemoryVectorStore
+from app.db.store import ChunkRecord, DocumentRecord, MemoryVectorStore
 
 
 def _chunk(cid: str, doc: str, ord_: int, content: str, emb: list[float]) -> ChunkRecord:

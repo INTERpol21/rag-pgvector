@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
-from app.store import ScoredChunk
+from app.db.store import ScoredChunk
 
 _REF_RE = re.compile(r"\[(\d+)\]")
 
@@ -20,6 +20,7 @@ class Citation:
     chunk_id: str
     snippet: str
     score: float
+    source: str = "local"  # provenance tier of the cited chunk (local | web | other)
 
 
 def _snippet(content: str, limit: int = SNIPPET_LEN) -> str:
@@ -61,6 +62,7 @@ def extract_citations(
                     chunk_id=chunk.chunk_id,
                     snippet=_snippet(chunk.content),
                     score=chunk.score,
+                    source=chunk.source,
                 )
             )
     return citations

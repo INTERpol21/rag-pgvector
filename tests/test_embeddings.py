@@ -1,10 +1,10 @@
 import math
 
-from app.embeddings import HashingEmbedder
+from app.services.embeddings import HashingEmbedder
 
 
 def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=False))
 
 
 async def test_deterministic_and_dim():

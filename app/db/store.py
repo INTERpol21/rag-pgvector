@@ -19,15 +19,21 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 
-from app.migrations import (
+from app.db.migrations import (
     CREATE_MIGRATIONS_TABLE_SQL,
     IS_APPLIED_SQL,
     RECORD_APPLIED_SQL,
     load_migrations,
 )
+
+if TYPE_CHECKING:
+    import asyncpg
+
+    from app.core.settings import Settings
 
 # Same token model as the hashing embedder: lowercased ASCII word tokens.
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -43,12 +49,25 @@ def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
+class StoreStats(TypedDict):
+    """Backend name plus row counts, returned by every store's ``stats()``."""
+
+    backend: str
+    documents: int
+    chunks: int
+
+
 @dataclass(frozen=True)
 class DocumentRecord:
     id: str
     title: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     content_hash: str = ""  # sha256 over title+text; "" = unknown (pre-hash rows)
+    # Local-first provenance: your own documents default to source="local" and a
+    # high priority so they outrank web/other in retrieval (see search_with_mode).
+    source: str = "local"  # local | web | other
+    priority: int = 0  # higher = more authoritative; local ingests default higher
+    owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +87,8 @@ class ScoredChunk:
     content: str
     ord: int
     score: float  # cosine similarity, BM25 or RRF score depending on the path
+    source: str = "local"  # provenance tier, carried from the document
+    priority: int = 0
 
 
 @runtime_checkable
@@ -84,7 +105,7 @@ class VectorStore(Protocol):
         self, embedding: Sequence[float], query_text: str, top_k: int
     ) -> list[ScoredChunk]: ...
 
-    async def stats(self) -> dict: ...
+    async def stats(self) -> StoreStats: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -140,11 +161,32 @@ async def search_with_mode(
     embedding: Sequence[float],
     query_text: str,
     top_k: int,
+    *,
+    sources: set[str] | None = None,
+    priority_boost: bool = True,
 ) -> list[ScoredChunk]:
-    """Dispatch retrieval on ``SEARCH_MODE`` (``vector`` | ``hybrid``)."""
+    """Dispatch retrieval on ``SEARCH_MODE`` (``vector`` | ``hybrid``), then apply
+    local-first post-processing.
+
+    ``sources`` (when given) keeps only chunks from those provenance tiers — this
+    is how the strict "only my data" mode is enforced. ``priority_boost`` re-orders
+    the survivors so higher-priority (local) documents outrank lower-priority (web)
+    ones regardless of raw similarity. When either is active we pull a larger
+    candidate pool so filtering does not starve the result.
+    """
+    want_pool = sources is not None or priority_boost
+    fetch_k = candidate_pool(top_k) if want_pool else top_k
     if mode == "hybrid":
-        return await store.search_hybrid(embedding, query_text, top_k)
-    return await store.search(embedding, top_k)
+        hits = await store.search_hybrid(embedding, query_text, fetch_k)
+    else:
+        hits = await store.search(embedding, fetch_k)
+
+    if sources is not None:
+        hits = [h for h in hits if h.source in sources]
+    if priority_boost:
+        # Stable: higher priority first, then original relevance, then id.
+        hits = sorted(hits, key=lambda h: (-h.priority, -h.score, h.chunk_id))
+    return hits[: max(top_k, 0)]
 
 
 # --------------------------------------------------------------------------- #
@@ -153,7 +195,7 @@ async def search_with_mode(
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:
@@ -171,9 +213,9 @@ class MemoryVectorStore:
         self._chunks: dict[str, ChunkRecord] = {}
         # Token index maintained on upsert: per-chunk term frequencies plus
         # corpus-level document frequencies, so BM25 is O(candidates) a query.
-        self._term_freqs: dict[str, Counter] = {}  # chunk id -> token counts
+        self._term_freqs: dict[str, Counter[str]] = {}  # chunk id -> token counts
         self._chunk_lens: dict[str, int] = {}  # chunk id -> token count
-        self._doc_freq: Counter = Counter()  # token -> chunks containing it
+        self._doc_freq: Counter[str] = Counter()  # token -> chunks containing it
 
     async def ensure_schema(self) -> None:  # nothing to do for dicts
         return None
@@ -222,6 +264,8 @@ class MemoryVectorStore:
                 content=c.content,
                 ord=c.ord,
                 score=_cosine(embedding, c.embedding),
+                source=self._documents[c.document_id].source,
+                priority=self._documents[c.document_id].priority,
             )
             for c in self._chunks.values()
         ]
@@ -256,6 +300,8 @@ class MemoryVectorStore:
                         content=chunk.content,
                         ord=chunk.ord,
                         score=score,
+                        source=self._documents[chunk.document_id].source,
+                        priority=self._documents[chunk.document_id].priority,
                     )
                 )
         scored.sort(key=lambda s: (-s.score, s.chunk_id))
@@ -269,7 +315,7 @@ class MemoryVectorStore:
         keyword_hits = await self.search_bm25(query_text, top_k=pool)
         return merge_ranked(vector_hits, keyword_hits, top_k)
 
-    async def stats(self) -> dict:
+    async def stats(self) -> StoreStats:
         return {
             "backend": self.backend,
             "documents": len(self._documents),
@@ -283,10 +329,10 @@ class MemoryVectorStore:
 
 SEARCH_SQL = """
 SELECT c.id, c.document_id, d.title, c.content, c.ord,
-       1 - (c.embedding <=> $1) AS score
+       1 - (c.embedding <=> $1) AS score, d.source, d.priority
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
-ORDER BY c.embedding <=> $1
+ORDER BY c.embedding <=> $1, c.id
 LIMIT $2
 """
 
@@ -295,7 +341,8 @@ LIMIT $2
 # websearch_to_tsquery never raises on user input.
 KEYWORD_SEARCH_SQL = """
 SELECT c.id, c.document_id, d.title, c.content, c.ord,
-       ts_rank_cd(c.content_tsv, websearch_to_tsquery('simple', $1)) AS score
+       ts_rank_cd(c.content_tsv, websearch_to_tsquery('simple', $1)) AS score,
+       d.source, d.priority
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
 WHERE c.content_tsv @@ websearch_to_tsquery('simple', $1)
@@ -304,11 +351,12 @@ LIMIT $2
 """
 
 UPSERT_DOCUMENT_SQL = """
-INSERT INTO documents (id, title, metadata, content_hash)
-VALUES ($1, $2, $3::jsonb, $4)
+INSERT INTO documents (id, title, metadata, content_hash, source, priority, owner)
+VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE
     SET title = EXCLUDED.title, metadata = EXCLUDED.metadata,
-        content_hash = EXCLUDED.content_hash
+        content_hash = EXCLUDED.content_hash, source = EXCLUDED.source,
+        priority = EXCLUDED.priority, owner = EXCLUDED.owner
 """
 
 DELETE_CHUNKS_SQL = "DELETE FROM chunks WHERE document_id = $1"
@@ -348,7 +396,7 @@ class PgVectorStore:
     def __init__(self, dsn: str, dim: int) -> None:
         self.dsn = normalize_dsn(dsn)
         self.dim = dim
-        self._pool = None
+        self._pool: asyncpg.Pool | None = None
 
     @property
     def schema_sql(self) -> str:
@@ -359,7 +407,7 @@ class PgVectorStore:
         import asyncpg
         from pgvector.asyncpg import register_vector
 
-        async def _init(conn) -> None:
+        async def _init(conn: asyncpg.Connection) -> None:
             # The extension must exist before the vector codec can register.
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             await register_vector(conn)
@@ -373,13 +421,13 @@ class PgVectorStore:
             await self._pool.close()
             self._pool = None
 
-    def _require_pool(self):
+    def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
             raise RuntimeError("PgVectorStore is not connected; call connect() first")
         return self._pool
 
     async def ensure_schema(self) -> None:
-        """Apply pending migrations, tracked in ``schema_migrations``."""
+        """Apply pending migrations, tracked in ``schema_migrations``, then guard dim."""
         pool = self._require_pool()
         migrations = load_migrations()
         async with pool.acquire() as conn:
@@ -390,6 +438,25 @@ class PgVectorStore:
                 async with conn.transaction():
                     await conn.execute(migration.sql_for(self.dim))
                     await conn.execute(RECORD_APPLIED_SQL, migration.version)
+            await self._assert_dimension(conn)
+
+    async def _assert_dimension(self, conn: asyncpg.Connection) -> None:
+        """Fail fast if the embedder's dim disagrees with the stored column.
+
+        Reconnecting an existing DB with a different ``EMBEDDING_DIM`` / embedder
+        would otherwise fail silently on every insert (dimension mismatch). For a
+        pgvector column, ``atttypmod`` holds the declared dimension.
+        """
+        stored = await conn.fetchval(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'"
+        )
+        if stored is not None and stored != self.dim:
+            raise RuntimeError(
+                f"embedding dimension mismatch: this store expects vector({self.dim}) "
+                f"but chunks.embedding is vector({stored}). The embedder/EMBEDDING_DIM "
+                f"changed against an existing database — reindex into a fresh schema."
+            )
 
     async def upsert(self, document: DocumentRecord, chunks: Sequence[ChunkRecord]) -> None:
         import json
@@ -405,6 +472,9 @@ class PgVectorStore:
                     document.title,
                     json.dumps(document.metadata),
                     document.content_hash,
+                    document.source,
+                    document.priority,
+                    document.owner,
                 )
                 await conn.execute(DELETE_CHUNKS_SQL, document.id)
                 await conn.executemany(
@@ -425,7 +495,7 @@ class PgVectorStore:
         return {r["id"]: r["content_hash"] for r in rows if r["content_hash"]}
 
     @staticmethod
-    def _scored(rows) -> list[ScoredChunk]:
+    def _scored(rows: Sequence[asyncpg.Record]) -> list[ScoredChunk]:
         return [
             ScoredChunk(
                 chunk_id=r["id"],
@@ -434,6 +504,8 @@ class PgVectorStore:
                 content=r["content"],
                 ord=r["ord"],
                 score=float(r["score"]),
+                source=r["source"],
+                priority=r["priority"],
             )
             for r in rows
         ]
@@ -460,7 +532,7 @@ class PgVectorStore:
             keyword_rows = await conn.fetch(KEYWORD_SEARCH_SQL, query_text, pool_size)
         return merge_ranked(self._scored(vector_rows), self._scored(keyword_rows), top_k)
 
-    async def stats(self) -> dict:
+    async def stats(self) -> StoreStats:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             documents = await conn.fetchval("SELECT count(*) FROM documents")
@@ -468,7 +540,7 @@ class PgVectorStore:
         return {"backend": self.backend, "documents": documents, "chunks": chunks}
 
 
-def build_store(settings, dim: int) -> VectorStore:
+def build_store(settings: Settings, dim: int) -> VectorStore:
     """Instantiate the store selected by ``STORE_BACKEND``."""
     backend = settings.store_backend.lower()
     if backend == "memory":

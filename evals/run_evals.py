@@ -25,24 +25,24 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # allow `python evals/run_evals.py` from repo root
     sys.path.insert(0, str(ROOT))
 
-from app.chunking import chunk_text  # noqa: E402
-from app.citations import extract_citations  # noqa: E402
-from app.embeddings import HashingEmbedder  # noqa: E402
-from app.errors import ProviderError  # noqa: E402
-from app.llm import LLM, MockLLM  # noqa: E402
-from app.settings import Settings  # noqa: E402
-from app.store import (  # noqa: E402
+from app.core.errors import ProviderError  # noqa: E402
+from app.core.settings import Settings  # noqa: E402
+from app.db.store import (  # noqa: E402
     ChunkRecord,
     DocumentRecord,
     MemoryVectorStore,
     search_with_mode,
 )
+from app.services.chunking import chunk_text  # noqa: E402
+from app.services.citations import extract_citations  # noqa: E402
+from app.services.embeddings import HashingEmbedder  # noqa: E402
+from app.services.llm import LLM, MockLLM  # noqa: E402
 
 GOLDEN_PATH = ROOT / "evals" / "golden.jsonl"
 DATA_DIR = ROOT / "data"
@@ -190,7 +190,7 @@ class EvalSummary:
 _REQUIRED_GOLDEN_KEYS = ("question", "expected_document_id", "reference_answer")
 
 
-def load_golden(path: Path, limit: Optional[int] = None) -> list[dict]:
+def load_golden(path: Path, limit: int | None = None) -> list[dict]:
     items: list[dict] = []
     for lineno, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
@@ -231,7 +231,7 @@ async def ingest_corpus(
                 content=piece,
                 embedding=vec,
             )
-            for i, (piece, vec) in enumerate(zip(pieces, vectors))
+            for i, (piece, vec) in enumerate(zip(pieces, vectors, strict=False))
         ]
         await store.upsert(document, chunks)
         n_docs += 1
@@ -243,9 +243,9 @@ async def run_evals(
     golden_path: Path = GOLDEN_PATH,
     data_dir: Path = DATA_DIR,
     top_k: int = 4,
-    limit: Optional[int] = None,
-    llm: Optional[LLM] = None,
-    judge: Optional[Judge] = None,
+    limit: int | None = None,
+    llm: LLM | None = None,
+    judge: Judge | None = None,
 ) -> EvalSummary:
     """Run the full pipeline on the golden set with a fresh in-memory index."""
     settings = Settings()
@@ -330,7 +330,7 @@ def render_report(summary: EvalSummary) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--golden", type=Path, default=GOLDEN_PATH)
     parser.add_argument("--data", type=Path, default=DATA_DIR)

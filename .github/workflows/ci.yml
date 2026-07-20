@@ -10,11 +10,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.10"
-          cache: pip
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: ruff check app tests evals
-      - run: python -m pytest -q
-      - run: python evals/run_evals.py --min-hit-rate 0.8
+          version: "0.8.17"
+      - run: uv sync --frozen
+      - run: uv run ruff check app tests evals
+      - run: uv run mypy app
+      - run: uv run pytest -q
+      - run: uv run python evals/run_evals.py --min-hit-rate 0.8
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.17"
+      - run: uv sync --frozen
+      - name: pip-audit (dependency CVEs)
+        run: uv run --with pip-audit pip-audit -r requirements.txt
+      - name: bandit (SAST)
+        run: uv run --with bandit bandit -q -r app
+
+  # OWASP-LLM red-team on the RAG synthesis boundary (LLM01 prompt injection,
+  # LLM07 system-prompt leakage). Starts the service offline (memory store + mock
+  # LLM), seeds a corpus, and runs promptfoo; a failed assertion fails the job.
+  llm-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: uv sync --frozen
+      - name: promptfoo eval
+        run: bash evals/promptfoo/run.sh

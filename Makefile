@@ -1,19 +1,29 @@
-.PHONY: install install-dev run test lint eval
+.PHONY: install install-dev run test lint typecheck eval lock
 
+# uv is the source of truth; requirements*.txt are exported from uv.lock for Docker/pip users.
 install:
-	pip install -r requirements.txt
+	uv sync --frozen --no-dev
 
 install-dev:
-	pip install -r requirements-dev.txt
+	uv sync --frozen
 
 run:
-	uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8081
+	uv run uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8081
 
 test:
-	python -m pytest
+	uv run pytest
 
 lint:
-	ruff check app tests evals
+	uv run ruff check app tests evals
+
+typecheck:
+	uv run mypy app
 
 eval:
-	python evals/run_evals.py --min-hit-rate 0.7
+	uv run python evals/run_evals.py --min-hit-rate 0.7
+
+# Regenerate uv.lock and the exported requirements files after editing pyproject.toml.
+lock:
+	uv lock
+	uv export --frozen --no-hashes --no-dev --no-emit-project -o requirements.txt
+	uv export --frozen --no-hashes --only-dev --no-emit-project -o requirements-dev.txt

@@ -1,5 +1,5 @@
-from app.citations import extract_citations, extract_reference_indices
-from app.store import ScoredChunk
+from app.db.store import ScoredChunk
+from app.services.citations import extract_citations, extract_reference_indices
 
 
 def _scored(i: int, doc: str = "doc") -> ScoredChunk:

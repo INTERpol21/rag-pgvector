@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
+MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 _FILENAME_RE = re.compile(r"^(\d{3})_[a-z0-9_]+\.sql$")
 
