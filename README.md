@@ -148,3 +148,7 @@ make typecheck                    # strict mypy over app
 ---
 
 MIT. Portfolio demo — siblings: [llm-gateway](https://github.com/INTERpol21/llm-gateway) · [mcp-tools-server](https://github.com/INTERpol21/mcp-tools-server) · [agent-orchestrator](https://github.com/INTERpol21/agent-orchestrator)
+
+## Releases
+
+Version history is in [CHANGELOG.md](CHANGELOG.md).
