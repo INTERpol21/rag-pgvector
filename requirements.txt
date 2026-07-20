@@ -45,7 +45,7 @@ pydantic==2.13.4
     #   fastapi
     #   pydantic-settings
     #   rag-pgvector
-pydantic-core==2.46.4
+pydantic-core==2.47.0
     # via pydantic
 pydantic-settings==2.14.2
     # via rag-pgvector
