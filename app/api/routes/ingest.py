@@ -8,9 +8,10 @@ data outranks web/other in retrieval.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import ValidationError
 
 from app.api.deps import require_api_key
-from app.schemas import DocumentIn, IngestRequest, IngestResponse, Source
+from app.schemas import MAX_TEXT_CHARS, DocumentIn, IngestRequest, IngestResponse, Source
 from app.services.extract import (
     MAX_UPLOAD_BYTES,
     ExtractionError,
@@ -58,10 +59,24 @@ async def ingest_file(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not text.strip():
         raise HTTPException(status_code=422, detail="no extractable text found in the file")
+    if len(text) > MAX_TEXT_CHARS:
+        # A large file whose extracted text exceeds the per-document limit must
+        # return a clean 413, not crash the DocumentIn construction into a 500.
+        raise HTTPException(
+            status_code=413,
+            detail=f"extracted text too large ({len(text)} chars; limit {MAX_TEXT_CHARS})",
+        )
 
-    document = DocumentIn(
-        title=title or file.filename or "uploaded", text=text, source=source, owner=owner
-    )
+    try:
+        document = DocumentIn(
+            title=title or file.filename or "uploaded", text=text, source=source, owner=owner
+        )
+    except ValidationError as exc:
+        # Any other schema violation (e.g. an over-long filename as title) becomes
+        # a 422 with the field errors, never an unhandled 500. Report loc+msg only
+        # (not the input value, which could be large).
+        errors = [{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()]
+        raise HTTPException(status_code=422, detail=errors) from exc
     st = request.app.state.settings
     return await ingest_documents(
         [document],

@@ -121,3 +121,25 @@ async def test_ingest_file_empty_text_returns_422(client):
         files={"file": ("blank.txt", b"   \n  \t ", "text/plain")},
     )
     assert resp.status_code == 422
+
+
+async def test_ingest_file_oversized_text_returns_413_not_500(client):
+    """Extracted text over the per-document limit is a clean 413, not a 500.
+
+    Regression: constructing DocumentIn in the route with over-limit text raised
+    pydantic ValidationError as an unhandled 500 instead of rejecting cleanly.
+    """
+    big = ("word " * 250_000).encode()  # ~1.25 MB > MAX_TEXT_CHARS
+    resp = await client.post(
+        "/ingest/file", files={"file": ("big.txt", big, "text/plain")}
+    )
+    assert resp.status_code == 413
+
+
+async def test_ingest_file_overlong_filename_title_returns_422_not_500(client):
+    """A pathologically long filename (title > limit) is a 422, not a 500."""
+    resp = await client.post(
+        "/ingest/file",
+        files={"file": ("x" * 2000 + ".txt", b"real content here", "text/plain")},
+    )
+    assert resp.status_code == 422
