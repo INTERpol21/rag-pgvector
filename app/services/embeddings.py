@@ -48,7 +48,9 @@ class HashingEmbedder:
         self.dim = dim
 
     def _bucket(self, token: str) -> int:
-        digest = hashlib.md5(token.encode("utf-8")).digest()
+        # Deterministic non-cryptographic bucketing (hash the token into a vector
+        # slot); usedforsecurity=False keeps this off the weak-hash security path.
+        digest = hashlib.md5(token.encode("utf-8"), usedforsecurity=False).digest()
         return int.from_bytes(digest[:4], "big") % self.dim
 
     def _embed_one(self, text: str) -> list[float]:
@@ -100,7 +102,9 @@ def _seed_vector(seed: str, dim: int) -> list[float]:
     vals: list[float] = []
     counter = 0
     while len(vals) < dim:
-        digest = hashlib.md5(f"{seed}:{counter}".encode()).digest()
+        # Deterministic non-cryptographic PRNG stream; usedforsecurity=False keeps
+        # this off the weak-hash security path (it is not a security primitive).
+        digest = hashlib.md5(f"{seed}:{counter}".encode(), usedforsecurity=False).digest()
         for j in range(0, len(digest), 2):
             vals.append(int.from_bytes(digest[j : j + 2], "big") / 65535.0 - 0.5)
         counter += 1

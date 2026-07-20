@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # --- API ---
-    host: str = "0.0.0.0"
+    # Bind all interfaces: intended for the containerized service (Docker/compose).
+    host: str = "0.0.0.0"  # nosec B104
     port: int = 8081
     # Comma-separated bearer tokens accepted on /ingest, /query and /stats.
     rag_api_keys: str = "demo-key"
