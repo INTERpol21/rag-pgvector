@@ -9,10 +9,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
-          version: "0.8.17"
+          version: "0.11.7"
       - run: uv sync --frozen
       # requirements.txt is exported from uv.lock and is what the Docker image
       # installs from — the lockfile itself is never read at image build time.
@@ -31,10 +31,10 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
-          version: "0.8.17"
+          version: "0.11.7"
       - run: uv sync --frozen
       - name: pip-audit (dependency CVEs)
         run: uv run --with pip-audit pip-audit -r requirements.txt
@@ -47,11 +47,11 @@ jobs:
   llm-eval:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
-          version: "0.8.17"
-      - uses: actions/setup-node@v4
+          version: "0.11.7"
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: uv sync --frozen
