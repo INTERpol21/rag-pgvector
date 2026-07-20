@@ -37,7 +37,10 @@ class DocumentIn(BaseModel):
     id: str | None = None
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
-    metadata: dict = Field(default_factory=dict)
+    # Free-form, caller-supplied JSON object: intentionally not modelled beyond
+    # "string keys -> arbitrary JSON values". ``object`` (not ``Any``) keeps it
+    # type-checked as opaque without pretending to know its shape.
+    metadata: dict[str, object] = Field(default_factory=dict)
     # Local-first provenance. Ingested documents are your own data by default:
     # source="local" + a high priority so they outrank web/other in retrieval.
     source: Source = "local"
@@ -66,7 +69,7 @@ class DocumentIn(BaseModel):
 
     @field_validator("metadata")
     @classmethod
-    def _metadata_within_bound(cls, value: dict) -> dict:
+    def _metadata_within_bound(cls, value: dict[str, object]) -> dict[str, object]:
         if len(json.dumps(value, default=str)) > MAX_METADATA_BYTES:
             raise ValueError(
                 f"metadata too large (limit is {MAX_METADATA_BYTES} bytes serialised)"
@@ -131,4 +134,26 @@ class QueryResponse(BaseModel):
     answer: str
     citations: list[CitationOut]
     retrieved: list[RetrievedChunkOut]
-    usage: dict | None = None
+    # Token accounting is passed through verbatim from the LLM backend. Its shape
+    # is provider-defined (OpenAI adds nested ``*_tokens_details`` objects), so it
+    # stays an opaque JSON object rather than a fixed model.
+    usage: dict[str, object] | None = None
+
+
+class HealthResponse(BaseModel):
+    """Liveness probe payload."""
+
+    status: str = "ok"
+
+
+class StatsResponse(BaseModel):
+    """Store counts plus the active backends (see the ``/stats`` route)."""
+
+    backend: str
+    documents: int
+    chunks: int
+    embeddings_backend: str
+    llm_backend: str
+    embedding_dim: int
+    search_mode: str
+    reranker: str

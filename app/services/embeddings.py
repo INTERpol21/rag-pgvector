@@ -6,11 +6,14 @@ import hashlib
 import math
 import re
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 
 from app.core.errors import ProviderError
+
+if TYPE_CHECKING:
+    from app.core.settings import Settings
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -184,7 +187,7 @@ class OpenAIEmbedder:
         return [item["embedding"] for item in sorted(data, key=lambda i: i["index"])]
 
 
-def build_embedder(settings) -> Embedder:
+def build_embedder(settings: Settings) -> Embedder:
     """Instantiate the embedder selected by ``EMBEDDINGS_BACKEND``."""
     backend = settings.embeddings_backend.lower()
     if backend == "hash":

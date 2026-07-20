@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 
 class JsonFormatter(logging.Formatter):
     """One JSON object per log line; includes ``request_id`` when present."""
 
     def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
+        payload: dict[str, object] = {
             "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "logger": record.name,

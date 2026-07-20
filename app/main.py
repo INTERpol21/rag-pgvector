@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -42,7 +43,7 @@ def create_app(
     configure_logging()
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Only the pgvector backend owns real resources (asyncpg pool).
         if isinstance(app.state.store, PgVectorStore):
             await app.state.store.connect()

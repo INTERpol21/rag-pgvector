@@ -12,12 +12,22 @@ import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 
 import httpx
 
 from app.core.errors import ProviderError
 from app.db.store import ScoredChunk
+
+if TYPE_CHECKING:
+    from app.core.settings import Settings
+
+
+class ChatMessage(TypedDict):
+    """A single OpenAI-style chat message (``role`` + ``content``)."""
+
+    role: str
+    content: str
 
 SYSTEM_PROMPT = (
     "You are a retrieval-augmented assistant. Answer the question using ONLY "
@@ -47,7 +57,7 @@ def format_context(chunks: Sequence[ScoredChunk]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_messages(question: str, chunks: Sequence[ScoredChunk]) -> list[dict]:
+def build_messages(question: str, chunks: Sequence[ScoredChunk]) -> list[ChatMessage]:
     """Build the chat messages for RAG synthesis."""
     user = (
         f"Context:\n{format_context(chunks)}\n\n"
@@ -63,7 +73,10 @@ def build_messages(question: str, chunks: Sequence[ScoredChunk]) -> list[dict]:
 @dataclass(frozen=True)
 class LLMResult:
     answer: str
-    usage: dict | None = None
+    # Provider-defined token accounting, passed through untouched. Kept opaque
+    # (``dict[str, object]``) because backends disagree on its shape — the mocks
+    # emit ``{prompt,completion,total}_tokens`` ints, OpenAI adds nested details.
+    usage: dict[str, object] | None = None
 
 
 @runtime_checkable
@@ -121,7 +134,7 @@ def _approx_tokens(text: str) -> int:
     return math.ceil(words * 1.3) if words else 0
 
 
-def _prompt_tokens(messages: Sequence[dict]) -> int:
+def _prompt_tokens(messages: Sequence[ChatMessage]) -> int:
     return _approx_tokens("\n".join(m["content"] for m in messages))
 
 
@@ -150,7 +163,7 @@ class MockLLM:
             for i, chunk in enumerate(chunks[: self.max_chunks], start=1)
         ]
         answer = " ".join(parts)
-        usage = {
+        usage: dict[str, object] = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": len(answer.split()),
             "total_tokens": prompt_tokens + len(answer.split()),
@@ -248,10 +261,10 @@ class OpenAIChatLLM:
         self.timeout_s = timeout_s
         self.temperature = temperature
 
-    async def complete(self, messages: list[dict]) -> LLMResult:
+    async def complete(self, messages: list[ChatMessage]) -> LLMResult:
         """Raw chat completion for arbitrary messages (also used by the
         LLM reranker, which needs a scoring prompt rather than RAG synthesis)."""
-        payload = {
+        payload: dict[str, object] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
@@ -278,7 +291,7 @@ class OpenAIChatLLM:
         return await self.complete(build_messages(question, chunks))
 
 
-def build_llm(settings) -> LLM:
+def build_llm(settings: Settings) -> LLM:
     """Instantiate the LLM selected by ``LLM_BACKEND``."""
     backend = settings.llm_backend.lower()
     if backend == "mock":

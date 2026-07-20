@@ -21,7 +21,7 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 
 from app.db.migrations import (
     CREATE_MIGRATIONS_TABLE_SQL,
@@ -29,6 +29,11 @@ from app.db.migrations import (
     RECORD_APPLIED_SQL,
     load_migrations,
 )
+
+if TYPE_CHECKING:
+    import asyncpg
+
+    from app.core.settings import Settings
 
 # Same token model as the hashing embedder: lowercased ASCII word tokens.
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -44,11 +49,19 @@ def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
+class StoreStats(TypedDict):
+    """Backend name plus row counts, returned by every store's ``stats()``."""
+
+    backend: str
+    documents: int
+    chunks: int
+
+
 @dataclass(frozen=True)
 class DocumentRecord:
     id: str
     title: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     content_hash: str = ""  # sha256 over title+text; "" = unknown (pre-hash rows)
     # Local-first provenance: your own documents default to source="local" and a
     # high priority so they outrank web/other in retrieval (see search_with_mode).
@@ -92,7 +105,7 @@ class VectorStore(Protocol):
         self, embedding: Sequence[float], query_text: str, top_k: int
     ) -> list[ScoredChunk]: ...
 
-    async def stats(self) -> dict: ...
+    async def stats(self) -> StoreStats: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -200,9 +213,9 @@ class MemoryVectorStore:
         self._chunks: dict[str, ChunkRecord] = {}
         # Token index maintained on upsert: per-chunk term frequencies plus
         # corpus-level document frequencies, so BM25 is O(candidates) a query.
-        self._term_freqs: dict[str, Counter] = {}  # chunk id -> token counts
+        self._term_freqs: dict[str, Counter[str]] = {}  # chunk id -> token counts
         self._chunk_lens: dict[str, int] = {}  # chunk id -> token count
-        self._doc_freq: Counter = Counter()  # token -> chunks containing it
+        self._doc_freq: Counter[str] = Counter()  # token -> chunks containing it
 
     async def ensure_schema(self) -> None:  # nothing to do for dicts
         return None
@@ -302,7 +315,7 @@ class MemoryVectorStore:
         keyword_hits = await self.search_bm25(query_text, top_k=pool)
         return merge_ranked(vector_hits, keyword_hits, top_k)
 
-    async def stats(self) -> dict:
+    async def stats(self) -> StoreStats:
         return {
             "backend": self.backend,
             "documents": len(self._documents),
@@ -383,7 +396,7 @@ class PgVectorStore:
     def __init__(self, dsn: str, dim: int) -> None:
         self.dsn = normalize_dsn(dsn)
         self.dim = dim
-        self._pool = None
+        self._pool: asyncpg.Pool | None = None
 
     @property
     def schema_sql(self) -> str:
@@ -394,7 +407,7 @@ class PgVectorStore:
         import asyncpg
         from pgvector.asyncpg import register_vector
 
-        async def _init(conn) -> None:
+        async def _init(conn: asyncpg.Connection) -> None:
             # The extension must exist before the vector codec can register.
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             await register_vector(conn)
@@ -408,7 +421,7 @@ class PgVectorStore:
             await self._pool.close()
             self._pool = None
 
-    def _require_pool(self):
+    def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
             raise RuntimeError("PgVectorStore is not connected; call connect() first")
         return self._pool
@@ -427,7 +440,7 @@ class PgVectorStore:
                     await conn.execute(RECORD_APPLIED_SQL, migration.version)
             await self._assert_dimension(conn)
 
-    async def _assert_dimension(self, conn) -> None:
+    async def _assert_dimension(self, conn: asyncpg.Connection) -> None:
         """Fail fast if the embedder's dim disagrees with the stored column.
 
         Reconnecting an existing DB with a different ``EMBEDDING_DIM`` / embedder
@@ -482,7 +495,7 @@ class PgVectorStore:
         return {r["id"]: r["content_hash"] for r in rows if r["content_hash"]}
 
     @staticmethod
-    def _scored(rows) -> list[ScoredChunk]:
+    def _scored(rows: Sequence[asyncpg.Record]) -> list[ScoredChunk]:
         return [
             ScoredChunk(
                 chunk_id=r["id"],
@@ -519,7 +532,7 @@ class PgVectorStore:
             keyword_rows = await conn.fetch(KEYWORD_SEARCH_SQL, query_text, pool_size)
         return merge_ranked(self._scored(vector_rows), self._scored(keyword_rows), top_k)
 
-    async def stats(self) -> dict:
+    async def stats(self) -> StoreStats:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             documents = await conn.fetchval("SELECT count(*) FROM documents")
@@ -527,7 +540,7 @@ class PgVectorStore:
         return {"backend": self.backend, "documents": documents, "chunks": chunks}
 
 
-def build_store(settings, dim: int) -> VectorStore:
+def build_store(settings: Settings, dim: int) -> VectorStore:
     """Instantiate the store selected by ``STORE_BACKEND``."""
     backend = settings.store_backend.lower()
     if backend == "memory":

@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from app.db.store import ScoredChunk
-from app.services.llm import LLMResult, OpenAIChatLLM
+from app.services.llm import LLM, ChatMessage, LLMResult, OpenAIChatLLM
+
+if TYPE_CHECKING:
+    from app.core.settings import Settings
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -106,7 +109,7 @@ class LLMReranker:
         self._llm = llm
 
     @staticmethod
-    def _messages(question: str, chunks: Sequence[ScoredChunk]) -> list[dict]:
+    def _messages(question: str, chunks: Sequence[ScoredChunk]) -> list[ChatMessage]:
         passages = "\n\n".join(
             f"[{i}] {chunk.content.strip()}" for i, chunk in enumerate(chunks, start=1)
         )
@@ -130,7 +133,7 @@ class LLMReranker:
         return [chunk for _, chunk in indexed]
 
 
-def build_reranker(settings, llm: object = None) -> Reranker | None:
+def build_reranker(settings: Settings, llm: LLM | None = None) -> Reranker | None:
     """Instantiate the reranker selected by ``RERANKER`` (None = stage off).
 
     For ``llm`` mode the app's chat client is reused when it is
