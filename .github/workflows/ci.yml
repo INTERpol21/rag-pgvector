@@ -14,6 +14,15 @@ jobs:
         with:
           version: "0.8.17"
       - run: uv sync --frozen
+      # requirements.txt is exported from uv.lock and is what the Docker image
+      # installs from — the lockfile itself is never read at image build time.
+      # When the two drift, tests stay green while the container fails to start
+      # on a missing dependency. Re-export and fail on any diff.
+      - name: requirements.txt in sync with uv.lock
+        run: |
+          uv export --frozen --no-hashes --no-dev --no-emit-project -o requirements.txt
+          uv export --frozen --no-hashes --only-dev --no-emit-project -o requirements-dev.txt
+          git diff --exit-code requirements.txt requirements-dev.txt
       - run: uv run ruff check app tests evals
       - run: uv run mypy app
       - run: uv run pytest -q
