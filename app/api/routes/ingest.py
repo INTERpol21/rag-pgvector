@@ -22,6 +22,26 @@ from app.services.ingest import ingest_documents
 
 router = APIRouter()
 
+# Read the upload in bounded chunks so an oversized/malicious body is rejected
+# before it is fully materialised in memory (a naive ``await file.read()`` buffers
+# the entire request body first, giving a trivial memory-exhaustion DoS).
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_capped(file: UploadFile, limit: int) -> bytes | None:
+    """Read up to ``limit`` bytes; return ``None`` if the file exceeds it."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @router.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
 async def ingest(payload: IngestRequest, request: Request) -> IngestResponse:
@@ -46,8 +66,8 @@ async def ingest_file(
     owner: str | None = Form(default=None),
 ) -> IngestResponse:
     """Upload a md/txt/pdf/docx file; its text is extracted and ingested."""
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
+    data = await _read_capped(file, MAX_UPLOAD_BYTES)
+    if data is None:
         raise HTTPException(
             status_code=413, detail=f"file too large (limit {MAX_UPLOAD_BYTES} bytes)"
         )

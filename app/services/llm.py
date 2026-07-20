@@ -54,10 +54,22 @@ NOT_IN_SOURCES_ANSWER = (
 )
 
 
+# Runs of 3+ hyphens are how the untrusted-data fence markers are built
+# ("----- BEGIN/END CONTEXT -----"). Collapsing them inside retrieved content
+# stops a poisoned chunk from forging an "END CONTEXT" line and escaping the
+# fence to be read as top-level instructions (OWASP LLM01 indirect injection).
+_FENCE_DASHES_RE = re.compile(r"-{3,}")
+
+
+def _defang_fence(text: str) -> str:
+    """Break up any fence-marker delimiters embedded in untrusted content."""
+    return _FENCE_DASHES_RE.sub("--", text)
+
+
 def format_context(chunks: Sequence[ScoredChunk]) -> str:
     """Render retrieved chunks as numbered context blocks (1-based)."""
     blocks = [
-        f"[{i}] (from \"{c.title}\")\n{c.content.strip()}"
+        f"[{i}] (from \"{_defang_fence(c.title)}\")\n{_defang_fence(c.content.strip())}"
         for i, c in enumerate(chunks, start=1)
     ]
     return "\n\n".join(blocks)

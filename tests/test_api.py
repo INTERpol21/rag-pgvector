@@ -290,4 +290,8 @@ async def test_llm_failure_maps_to_502(store, embedder):
     ) as client:
         resp = await client.post("/query", json={"question": "boom"})
     assert resp.status_code == 502
-    assert "upstream provider error" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    # Generic client-facing detail only: the internal cause (upstream URL / raw
+    # upstream body) is logged server-side, never echoed to the API client.
+    assert detail == "upstream provider unavailable"
+    assert "timed out" not in detail
