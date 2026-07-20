@@ -11,6 +11,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 Source = Literal["local", "web", "other"]
 # Local ingests default to a high priority so your own data outranks web/other.
 DEFAULT_LOCAL_PRIORITY = 100
+# Priority defaults keyed by provenance. Without this coupling a web document
+# ingested without an explicit priority would inherit the local default and tie
+# with (or outrank) local data — defeating the local-first guarantee. Local wins,
+# "other" sits in the middle, web is demoted to a fallback tier.
+SOURCE_DEFAULT_PRIORITY: dict[str, int] = {"local": DEFAULT_LOCAL_PRIORITY, "other": 50, "web": 0}
 
 # Input bounds. These keep a single request's memory/compute footprint finite
 # so hostile payloads (a 2 MB document, a 500-document batch, a 50 KB question)
@@ -38,6 +43,17 @@ class DocumentIn(BaseModel):
     source: Source = "local"
     priority: int = Field(default=DEFAULT_LOCAL_PRIORITY, ge=0, le=1000)
     owner: str | None = Field(default=None, max_length=MAX_TITLE_CHARS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_priority_from_source(cls, data: object) -> object:
+        # Runs before field defaults, so "priority not in data" means the client
+        # omitted it — then derive the tier from source (local>other>web) instead
+        # of always falling back to the local default.
+        if isinstance(data, dict) and data.get("priority") is None:
+            source = data.get("source", "local")
+            data = {**data, "priority": SOURCE_DEFAULT_PRIORITY.get(source, DEFAULT_LOCAL_PRIORITY)}
+        return data
 
     @field_validator("title", "text")
     @classmethod

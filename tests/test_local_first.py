@@ -61,3 +61,36 @@ async def test_citations_carry_source(client):
     # The extractive mock LLM cites; every citation must expose its provenance.
     for citation in body["citations"]:
         assert citation["source"] in ("local", "web", "other")
+
+
+def test_priority_defaults_follow_source():
+    """Omitted priority is derived from source, not always the local default.
+
+    Regression: a web document ingested without an explicit priority used to
+    inherit priority=100 and tie with local data, silently breaking local-first.
+    """
+    from app.schemas import DocumentIn
+
+    assert DocumentIn(title="t", text="x", source="local").priority == 100
+    assert DocumentIn(title="t", text="x", source="other").priority == 50
+    assert DocumentIn(title="t", text="x", source="web").priority == 0
+    # An explicit priority always wins over the source-derived default.
+    assert DocumentIn(title="t", text="x", source="web", priority=99).priority == 99
+    # Omitted source defaults to local -> high priority.
+    assert DocumentIn(title="t", text="x").priority == 100
+
+
+async def test_local_outranks_web_without_explicit_priority(client):
+    """End-to-end: same text, only source differs, no priority set -> local wins."""
+    text = "pgvector cosine distance uses the <=> operator with vector_cosine_ops."
+    await client.post(
+        "/ingest",
+        json={
+            "documents": [
+                {"id": "w", "title": "Web", "text": text, "source": "web"},
+                {"id": "l", "title": "Local", "text": text, "source": "local"},
+            ]
+        },
+    )
+    body = (await client.post("/query", json={"question": text, "top_k": 4})).json()
+    assert body["retrieved"][0]["source"] == "local"
