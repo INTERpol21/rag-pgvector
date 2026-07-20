@@ -1,0 +1,86 @@
+# Tags a release when the version in pyproject.toml changes on main.
+#
+# The version in the manifest is the single source of truth: bump it in a PR,
+# and merging that PR creates the tag and the GitHub release. Nothing to run by
+# hand, and no way to tag a commit that did not pass CI.
+name: tag-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+
+# A second push while this is running would race on creating the same tag.
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags, so the "already exists" check is meaningful
+
+      - name: Read version
+        id: v
+        run: |
+          version=$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "::error::no version found in pyproject.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      # Re-tagging a published version would move a reference people may already
+      # depend on, so this stops instead. Bump the version to release again.
+      - name: Skip if the tag already exists
+        id: check
+        run: |
+          if git rev-parse -q --verify "refs/tags/${{ steps.v.outputs.tag }}" >/dev/null; then
+            echo "${{ steps.v.outputs.tag }} already exists — nothing to do"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The changelog entry is what makes a release readable; a tag without one
+      # is a version number and nothing else.
+      - name: Require a matching CHANGELOG entry
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          if ! grep -q "^## \[${{ steps.v.outputs.version }}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${{ steps.v.outputs.version }}]' section"
+            exit 1
+          fi
+
+      - name: Create the tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.v.outputs.tag }}" \
+            -m "${{ steps.v.outputs.tag }}
+
+          See CHANGELOG.md for what is in this release."
+          git push origin "${{ steps.v.outputs.tag }}"
+
+      # Release notes are the changelog section verbatim — one source, no drift.
+      - name: Publish the GitHub release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v v="${{ steps.v.outputs.version }}" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/         { exit }
+            on                     { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "${{ steps.v.outputs.tag }}" \
+            --title "${{ steps.v.outputs.tag }}" --notes-file notes.md
