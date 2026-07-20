@@ -1,0 +1,10 @@
+{
+  "documents": [
+    {
+      "id": "pgvector_operators",
+      "title": "pgvector distance operators",
+      "text": "pgvector adds several distance operators to Postgres. The <=> operator computes cosine distance and is backed by the vector_cosine_ops operator class. The <-> operator computes L2 (Euclidean) distance with vector_l2_ops. For semantic similarity search over embeddings, use vector_cosine_ops with an HNSW index.",
+      "source": "local"
+    }
+  ]
+}

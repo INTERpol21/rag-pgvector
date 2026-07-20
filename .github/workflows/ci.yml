@@ -31,3 +31,20 @@ jobs:
         run: uv run --with pip-audit pip-audit -r requirements.txt
       - name: bandit (SAST)
         run: uv run --with bandit bandit -q -r app
+
+  # OWASP-LLM red-team on the RAG synthesis boundary (LLM01 prompt injection,
+  # LLM07 system-prompt leakage). Starts the service offline (memory store + mock
+  # LLM), seeds a corpus, and runs promptfoo; a failed assertion fails the job.
+  llm-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: uv sync --frozen
+      - name: promptfoo eval
+        run: bash evals/promptfoo/run.sh
