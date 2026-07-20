@@ -6,7 +6,7 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-20
+## [1.0.0] - 2026-07-21
 
 First tagged release. A RAG service on FastAPI + Postgres/pgvector with hybrid
 retrieval and an evals harness in CI.
@@ -32,4 +32,4 @@ retrieval and an evals harness in CI.
   interfaces, not production components.
 - pgvector integration tests are skipped unless a live `DATABASE_URL` is set.
 
-[0.1.0]: https://github.com/INTERpol21/rag-pgvector/releases/tag/v0.1.0
+[1.0.0]: https://github.com/INTERpol21/rag-pgvector/releases/tag/v1.0.0
