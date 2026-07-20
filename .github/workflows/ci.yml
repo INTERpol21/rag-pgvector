@@ -42,7 +42,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.8.17"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: uv sync --frozen
