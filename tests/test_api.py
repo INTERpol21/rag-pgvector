@@ -20,6 +20,23 @@ async def test_healthz(client):
     assert resp.json() == {"status": "ok"}
 
 
+async def test_v1_is_canonical_and_legacy_still_works(client):
+    """The API is served under /v1 and the legacy unprefixed path still resolves.
+
+    Guards the /v1 unification: /v1/ingest is the documented path, while /ingest
+    keeps working for the transition. The OpenAPI schema advertises only /v1.
+    """
+    doc = {"documents": [{"title": "t", "text": "vector search with pgvector"}]}
+    v1 = await client.post("/v1/ingest", json=doc)
+    legacy = await client.post("/ingest", json=doc)
+    assert v1.status_code == 200
+    assert legacy.status_code == 200
+
+    schema = (await client.get("/openapi.json")).json()["paths"]
+    assert "/v1/ingest" in schema
+    assert "/ingest" not in schema  # legacy hidden from the contract
+
+
 async def test_ingest_validation_422(client):
     # empty document list
     resp = await client.post("/ingest", json={"documents": []})

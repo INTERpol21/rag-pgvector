@@ -45,19 +45,24 @@ uvicorn app.main:create_app --factory --port 8081   # offline: no Postgres, no u
 
 ## API
 
+The API is served under a unified **`/v1`** prefix (aligned with the gateway), so
+the contracts package has one shape across services. The legacy unprefixed paths
+(`/ingest`, `/query`, `/stats`) still resolve during the transition but are hidden
+from the OpenAPI schema — migrate to `/v1`.
+
 ```bash
 # JSON ingest (source defaults to "local")
-curl -s localhost:8081/ingest -X POST \
+curl -s localhost:8081/v1/ingest -X POST \
   -H 'content-type: application/json' -H 'Authorization: Bearer demo-key' \
   -d '{"documents": [{"id": "pgvector_internals", "title": "pgvector Internals", "text": "..."}]}'
 
 # File ingest (md/txt/pdf/docx, 10 MB cap); tag its provenance with a form field
-curl -s localhost:8081/ingest/file -X POST \
+curl -s localhost:8081/v1/ingest/file -X POST \
   -H 'Authorization: Bearer demo-key' \
   -F 'file=@./notes.pdf' -F 'source=local' -F 'owner=anton'
 
 # Query; optionally restrict to provenance tiers with "sources"
-curl -s localhost:8081/query -X POST \
+curl -s localhost:8081/v1/query -X POST \
   -H 'content-type: application/json' -H 'Authorization: Bearer demo-key' \
   -d '{"question": "Which pgvector operator matches cosine?", "top_k": 4, "sources": ["local"]}'
 ```
