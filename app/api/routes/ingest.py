@@ -1,74 +1,72 @@
-"""Ingest endpoint: chunk -> embed -> upsert, idempotent by content hash."""
+"""Ingest endpoints: JSON documents and file uploads (md/txt/pdf/docx).
+
+Both funnel into ``ingest_documents`` (chunk -> embed -> upsert, idempotent by
+content hash). Uploaded files are tagged ``source=local`` by default so your own
+data outranks web/other in retrieval.
+"""
 
 from __future__ import annotations
 
-import uuid
-
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from app.api.deps import require_api_key
-from app.db.store import ChunkRecord, DocumentRecord
-from app.schemas import DocumentIn, IngestRequest, IngestResponse, content_hash
-from app.services.chunking import chunk_text
+from app.schemas import DocumentIn, IngestRequest, IngestResponse, Source
+from app.services.extract import (
+    MAX_UPLOAD_BYTES,
+    ExtractionError,
+    UnsupportedFileError,
+    extract_text,
+)
+from app.services.ingest import ingest_documents
 
 router = APIRouter()
 
 
 @router.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
 async def ingest(payload: IngestRequest, request: Request) -> IngestResponse:
-    state = request.app.state
-    st = state.settings
-    document_ids: list[str] = []
-    incoming: list[tuple[DocumentIn, str, str]] = []  # (doc, id, hash)
+    st = request.app.state.settings
+    return await ingest_documents(
+        payload.documents,
+        store=request.app.state.store,
+        embedder=request.app.state.embedder,
+        chunk_size=st.chunk_size,
+        chunk_overlap=st.chunk_overlap,
+    )
 
-    for doc in payload.documents:
-        doc_id = doc.id or uuid.uuid4().hex
-        document_ids.append(doc_id)
-        incoming.append((doc, doc_id, content_hash(doc.title, doc.text)))
 
-    # Idempotence: a document whose (title, text) hash matches what is
-    # already stored is skipped before any chunking or embedding work.
-    existing = await state.store.content_hashes([i[1] for i in incoming])
-    skipped = 0
-    docs_with_chunks: list[tuple[DocumentRecord, list[str]]] = []
-    all_texts: list[str] = []
-    for doc, doc_id, doc_hash in incoming:
-        if existing.get(doc_id) == doc_hash:
-            skipped += 1
-            continue
-        pieces = chunk_text(doc.text, st.chunk_size, st.chunk_overlap)
-        record = DocumentRecord(
-            id=doc_id,
-            title=doc.title,
-            metadata=doc.metadata,
-            content_hash=doc_hash,
-            source=doc.source,
-            priority=doc.priority,
-            owner=doc.owner,
+@router.post(
+    "/ingest/file", response_model=IngestResponse, dependencies=[Depends(require_api_key)]
+)
+async def ingest_file(
+    request: Request,
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    source: Source = Form(default="local"),
+    owner: str | None = Form(default=None),
+) -> IngestResponse:
+    """Upload a md/txt/pdf/docx file; its text is extracted and ingested."""
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413, detail=f"file too large (limit {MAX_UPLOAD_BYTES} bytes)"
         )
-        docs_with_chunks.append((record, pieces))
-        all_texts.extend(pieces)
+    try:
+        text = extract_text(file.filename or "", data)
+    except UnsupportedFileError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except ExtractionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="no extractable text found in the file")
 
-    # One batched embedding call for the whole request.
-    vectors = await state.embedder.embed(all_texts) if all_texts else []
-
-    cursor = 0
-    chunks_indexed = 0
-    for record, pieces in docs_with_chunks:
-        chunk_records = [
-            ChunkRecord(
-                id=f"{record.id}:{i}",
-                document_id=record.id,
-                ord=i,
-                content=piece,
-                embedding=vectors[cursor + i],
-            )
-            for i, piece in enumerate(pieces)
-        ]
-        cursor += len(pieces)
-        await state.store.upsert(record, chunk_records)
-        chunks_indexed += len(chunk_records)
-
-    return IngestResponse(
-        document_ids=document_ids, chunks_indexed=chunks_indexed, skipped=skipped
+    document = DocumentIn(
+        title=title or file.filename or "uploaded", text=text, source=source, owner=owner
+    )
+    st = request.app.state.settings
+    return await ingest_documents(
+        [document],
+        store=request.app.state.store,
+        embedder=request.app.state.embedder,
+        chunk_size=st.chunk_size,
+        chunk_overlap=st.chunk_overlap,
     )
