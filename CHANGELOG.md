@@ -6,6 +6,25 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-23
+
+### Added
+- Multilingual retrieval. Both keyword legs now stem word forms with the same
+  Snowball algorithms: the Postgres FTS column and query moved from `simple`
+  to the `russian` config (Cyrillic via russian_stem, ASCII via english_stem —
+  migrations/007), and the memory BM25 leg plus the offline embedders share a
+  new tokenizer (`app/services/textnorm.py`, pure-Python `snowballstemmer`).
+  "векторный поиск" now finds "векторном поиске" in memory, in pgvector, and
+  in the hash-embedded vector leg. Non-word tokens (error codes, digit-bearing
+  names) pass through unstemmed and stay exact-searchable.
+- A Russian note in the demo corpus plus Russian golden questions, so the eval
+  harness exercises Cyrillic retrieval end to end.
+
+### Changed
+- Offline embedder vectors changed (tokens are now stemmed): a pgvector store
+  populated with old hash/semantic-mock embeddings should be re-ingested. The
+  openai/gateway embedding backends are unaffected.
+
 ## [1.1.0] - 2026-07-23
 
 ### Added

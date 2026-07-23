@@ -17,7 +17,6 @@ rankings merged with Reciprocal Rank Fusion). ``SEARCH_MODE`` picks one via
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -29,17 +28,17 @@ from app.db.migrations import (
     RECORD_APPLIED_SQL,
     load_migrations,
 )
+from app.services.textnorm import normalize_tokens
 
 if TYPE_CHECKING:
     import asyncpg
 
     from app.core.settings import Settings
 
-# Lowercased Unicode word tokens. Must stay Unicode-aware: the Postgres keyword
-# leg tokenizes with the 'simple' FTS config, which handles any script — an
-# ASCII-only regex here made the two legs disagree, left BM25 blind to
-# non-Latin corpora, and (with every chunk length at 0) crashed avg_len math.
-_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+# Tokenization + stemming live in app/services/textnorm.py, shared with the
+# offline embedders and algorithm-matched to the Postgres leg's 'russian' FTS
+# config (migrations/007) — Snowball on both sides, so "поиске" matches
+# "поиск" identically in memory and in pgvector.
 
 # BM25 (Okapi) constants: k1 saturates term frequency, b scales length
 # normalization. RRF_K dampens the influence of exact ranks in the fusion.
@@ -49,7 +48,7 @@ RRF_K = 60
 
 
 def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall(text.lower())
+    return normalize_tokens(text)
 
 
 class StoreStats(TypedDict):
@@ -344,16 +343,18 @@ ORDER BY c.embedding <=> $1, c.id
 LIMIT $2
 """
 
-# Keyword leg of hybrid search. 'simple' matches the generated content_tsv
-# column from migrations/003_fts.sql (no stemming, exact terms searchable);
+# Keyword leg of hybrid search. 'russian' matches the generated content_tsv
+# column from migrations/007_russian_fts.sql: Cyrillic stems via russian_stem,
+# ASCII via english_stem — same Snowball algorithms as the memory BM25 leg
+# (textnorm.py). Config here and in the migration MUST stay in lockstep;
 # websearch_to_tsquery never raises on user input.
 KEYWORD_SEARCH_SQL = """
 SELECT c.id, c.document_id, d.title, c.content, c.ord,
-       ts_rank_cd(c.content_tsv, websearch_to_tsquery('simple', $1)) AS score,
+       ts_rank_cd(c.content_tsv, websearch_to_tsquery('russian', $1)) AS score,
        d.source, d.priority
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
-WHERE c.content_tsv @@ websearch_to_tsquery('simple', $1)
+WHERE c.content_tsv @@ websearch_to_tsquery('russian', $1)
 ORDER BY score DESC, c.id
 LIMIT $2
 """
