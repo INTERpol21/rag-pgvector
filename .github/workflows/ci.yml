@@ -8,6 +8,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A real pgvector Postgres for the integration tests: without DATABASE_URL
+    # they skip, which left the store — the layer with the most SQL in it — as
+    # the only part of the service CI never exercised.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -25,7 +42,15 @@ jobs:
           git diff --exit-code requirements.txt requirements-dev.txt
       - run: uv run ruff check app tests evals
       - run: uv run mypy app
-      - run: uv run pytest -q
+      # -rs so a silent skip regression (e.g. the env var lost in a refactor)
+      # is visible in the log; the grep makes it fatal.
+      - name: pytest (offline + pgvector integration)
+        env:
+          DATABASE_URL: postgresql://rag:rag@localhost:5432/rag
+        run: |
+          set -o pipefail
+          uv run pytest -q -rs | tee /tmp/pytest.out
+          ! grep -qE "SKIPPED.*(DATABASE_URL|pgvector)" /tmp/pytest.out
       - run: uv run python evals/run_evals.py --min-hit-rate 0.8
 
   security:
