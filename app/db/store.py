@@ -109,6 +109,14 @@ class VectorStore(Protocol):
 
     async def stats(self) -> StoreStats: ...
 
+    async def embedder_fingerprint(self) -> str | None: ...
+
+    async def set_embedder_fingerprint(self, fingerprint: str) -> None: ...
+
+    async def all_chunk_texts(self) -> list[tuple[str, str]]: ...
+
+    async def update_embeddings(self, embeddings: dict[str, list[float]]) -> None: ...
+
 
 # --------------------------------------------------------------------------- #
 # Rank fusion (shared by both backends)
@@ -218,6 +226,8 @@ class MemoryVectorStore:
         self._term_freqs: dict[str, Counter[str]] = {}  # chunk id -> token counts
         self._chunk_lens: dict[str, int] = {}  # chunk id -> token count
         self._doc_freq: Counter[str] = Counter()  # token -> chunks containing it
+        # Fingerprint of the embedder that wrote the vectors (reindex.py).
+        self._embedder_fingerprint: str | None = None
 
     async def ensure_schema(self) -> None:  # nothing to do for dicts
         return None
@@ -329,6 +339,21 @@ class MemoryVectorStore:
             "chunks": len(self._chunks),
         }
 
+    async def embedder_fingerprint(self) -> str | None:
+        return self._embedder_fingerprint
+
+    async def set_embedder_fingerprint(self, fingerprint: str) -> None:
+        self._embedder_fingerprint = fingerprint
+
+    async def all_chunk_texts(self) -> list[tuple[str, str]]:
+        return [(cid, chunk.content) for cid, chunk in sorted(self._chunks.items())]
+
+    async def update_embeddings(self, embeddings: dict[str, list[float]]) -> None:
+        for chunk_id, embedding in embeddings.items():
+            chunk = self._chunks.get(chunk_id)
+            if chunk is not None:
+                self._chunks[chunk_id] = replace(chunk, embedding=list(embedding))
+
 
 # --------------------------------------------------------------------------- #
 # Postgres + pgvector backend
@@ -381,6 +406,19 @@ ON CONFLICT (id) DO UPDATE
 CONTENT_HASHES_SQL = """
 SELECT id, content_hash FROM documents WHERE id = ANY($1::text[])
 """
+
+META_GET_SQL = "SELECT value FROM index_meta WHERE key = $1"
+
+META_SET_SQL = """
+INSERT INTO index_meta (key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+"""
+
+ALL_CHUNK_TEXTS_SQL = "SELECT id, content FROM chunks ORDER BY id"
+
+UPDATE_EMBEDDING_SQL = "UPDATE chunks SET embedding = $2 WHERE id = $1"
+
+EMBEDDER_FINGERPRINT_KEY = "embedder_fingerprint"
 
 
 def normalize_dsn(dsn: str) -> str:
@@ -547,6 +585,34 @@ class PgVectorStore:
             documents = await conn.fetchval("SELECT count(*) FROM documents")
             chunks = await conn.fetchval("SELECT count(*) FROM chunks")
         return {"backend": self.backend, "documents": documents, "chunks": chunks}
+
+    async def embedder_fingerprint(self) -> str | None:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            value = await conn.fetchval(META_GET_SQL, EMBEDDER_FINGERPRINT_KEY)
+        return str(value) if value is not None else None
+
+    async def set_embedder_fingerprint(self, fingerprint: str) -> None:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(META_SET_SQL, EMBEDDER_FINGERPRINT_KEY, fingerprint)
+
+    async def all_chunk_texts(self) -> list[tuple[str, str]]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(ALL_CHUNK_TEXTS_SQL)
+        return [(r["id"], r["content"]) for r in rows]
+
+    async def update_embeddings(self, embeddings: dict[str, list[float]]) -> None:
+        from pgvector import Vector
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.executemany(
+                    UPDATE_EMBEDDING_SQL,
+                    [(cid, Vector(vec)) for cid, vec in embeddings.items()],
+                )
 
 
 def build_store(settings: Settings, dim: int) -> VectorStore:

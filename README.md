@@ -121,7 +121,7 @@ make eval                                   # python evals/run_evals.py --min-hi
 python evals/run_evals.py --min-hit-rate 0.8   # CI gate
 ```
 
-Runs the full pipeline over `evals/golden.jsonl` (12 questions on the 4-note demo corpus in `data/`) and writes `evals/report.md`. Sample run: hit_rate@4 1.00, citation_presence 1.00, judge_score 4.17/5. The default judge is a deterministic keyword-overlap mock, so CI stays reproducible; `JUDGE_BACKEND=openai` scores with a real model through the gateway. `--min-hit-rate` fails the build on retrieval regressions.
+Runs the full pipeline over `evals/golden.jsonl` (12 questions on the 5-note demo corpus in `data/`) and writes `evals/report.md`. Sample run: hit_rate@4 1.00, citation_presence 1.00, judge_score 4.17/5. The default judge is a deterministic keyword-overlap mock, so CI stays reproducible; `JUDGE_BACKEND=openai` scores with a real model through the gateway. `--min-hit-rate` fails the build on retrieval regressions.
 
 ## Notes
 
@@ -136,7 +136,7 @@ make lint                         # ruff check app tests evals
 make typecheck                    # strict mypy over app
 ```
 
-85 tests run offline against the in-memory stack. The 10 `PgVectorStore` integration tests (`tests/test_pgvector_store.py`, `tests/test_pgvector_deep.py`) skip unless `DATABASE_URL` points at a live pgvector Postgres (compose db: `postgresql://rag:rag@localhost:5433/rag`).
+93 tests run offline against the in-memory stack. The 11 `PgVectorStore` integration tests (`tests/test_pgvector_store.py`, `tests/test_pgvector_deep.py`) skip unless `DATABASE_URL` points at a live pgvector Postgres (compose db: `postgresql://rag:rag@localhost:5433/rag`).
 
 ## Developer experience
 
