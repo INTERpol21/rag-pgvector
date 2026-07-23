@@ -10,6 +10,8 @@ from app.db.store import (
     normalize_dsn,
     search_with_mode,
 )
+from app.services.embeddings import HashingEmbedder, SemanticMockEmbedder
+from app.services.reindex import sync_embedder_fingerprint
 
 _INTEGRATION = pytest.mark.skipif(
     not os.getenv("DATABASE_URL"),
@@ -149,5 +151,45 @@ async def test_russian_word_forms_match_via_fts(fresh_pg_dsn):
         # chunk only if stemming folds "векторный поиск" onto "векторном поиске".
         results = await store.search_hybrid([0.0, 1.0, 0.0, 0.0], "векторный поиск", top_k=2)
         assert results[0].chunk_id == "ru:0"
+    finally:
+        await store.close()
+
+
+@_INTEGRATION
+async def test_embedder_fingerprint_survives_and_reembeds(fresh_pg_dsn):
+    """The fingerprint persists in index_meta across reconnects; a same-dim
+    embedder switch re-embeds the stored vectors into the new space."""
+    old = HashingEmbedder(dim=8)
+    store = PgVectorStore(fresh_pg_dsn, dim=8)
+    await store.connect()
+    try:
+        await store.ensure_schema()
+        assert await sync_embedder_fingerprint(store, old) == "adopted"
+        vectors = await old.embed(["alpha beta"])
+        await store.upsert(
+            DocumentRecord(id="fp-doc", title="FP"),
+            [ChunkRecord("fp-doc:0", "fp-doc", 0, "alpha beta", vectors[0])],
+        )
+    finally:
+        await store.close()
+
+    # A fresh connection (new process, same config): recognised, untouched.
+    store = PgVectorStore(fresh_pg_dsn, dim=8)
+    await store.connect()
+    try:
+        await store.ensure_schema()
+        assert await sync_embedder_fingerprint(store, old) == "match"
+
+        # Switched embedder, same dim — the schema guard cannot see this.
+        new = SemanticMockEmbedder(dim=8)
+        assert await sync_embedder_fingerprint(store, new) == "reembedded:1"
+        assert await store.embedder_fingerprint() == "semantic:8"
+
+        # The stored vector now lives in the new space: querying with the new
+        # embedder's vector for the same text is an (almost) exact match.
+        query = (await new.embed(["alpha beta"]))[0]
+        results = await store.search(query, top_k=1)
+        assert results[0].chunk_id == "fp-doc:0"
+        assert results[0].score > 0.99
     finally:
         await store.close()

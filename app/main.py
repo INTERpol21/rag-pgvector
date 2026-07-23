@@ -10,12 +10,13 @@ from fastapi import FastAPI
 from app import __version__
 from app.api.routes import health, ingest, query, stats
 from app.core.errors import register_exception_handlers
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, get_logger
 from app.core.middleware import request_context
 from app.core.settings import Settings
 from app.db.store import PgVectorStore, VectorStore, build_store
 from app.services.embeddings import Embedder, build_embedder
 from app.services.llm import LLM, build_llm
+from app.services.reindex import sync_embedder_fingerprint
 from app.services.rerank import Reranker, build_reranker
 
 
@@ -42,6 +43,7 @@ def create_app(
         key.strip() for key in settings.rag_api_keys.split(",") if key.strip()
     )
     configure_logging()
+    logger = get_logger("rag.app")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -50,14 +52,25 @@ def create_app(
             await app.state.store.connect()
             # ensure_schema inside the try: its dimension guard is a documented
             # fail-fast path, and failing it must still close the asyncpg pool.
+            # The fingerprint sync runs before traffic for the same reason: a
+            # switched embedder re-embeds the corpus (or the startup fails)
+            # rather than serving mixed vector spaces.
             try:
                 await app.state.store.ensure_schema()
+                await _sync_fingerprint(app)
                 yield
             finally:
                 await app.state.store.close()
         else:
             await app.state.store.ensure_schema()
+            await _sync_fingerprint(app)
             yield
+
+    async def _sync_fingerprint(app: FastAPI) -> None:
+        outcome = await sync_embedder_fingerprint(app.state.store, app.state.embedder)
+        logger.info(
+            "embedder fingerprint %s (%s)", outcome, app.state.embedder.fingerprint
+        )
 
     app = FastAPI(
         title="rag-pgvector",

@@ -26,6 +26,10 @@ class Embedder(Protocol):
     """Anything that can turn a batch of texts into fixed-size vectors."""
 
     dim: int
+    # Identity of the vector space these embeddings live in (model + width).
+    # Two embedders with different fingerprints produce incomparable vectors;
+    # the store records the fingerprint that wrote it (see services/reindex.py).
+    fingerprint: str
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Return one vector of length ``dim`` per input text."""
@@ -49,6 +53,7 @@ class HashingEmbedder:
         if dim <= 0:
             raise ValueError("dim must be positive")
         self.dim = dim
+        self.fingerprint = f"hash:{dim}"
 
     def _bucket(self, token: str) -> int:
         # Deterministic non-cryptographic bucketing (hash the token into a vector
@@ -141,6 +146,7 @@ class SemanticMockEmbedder:
         if dim <= 0:
             raise ValueError("dim must be positive")
         self.dim = dim
+        self.fingerprint = f"semantic:{dim}"
         self._cache: dict[str, list[float]] = {}
 
     def _direction(self, token: str) -> list[float]:
@@ -183,6 +189,10 @@ class OpenAIEmbedder:
         self.model = model
         self.dim = dim
         self.timeout_s = timeout_s
+        # Deliberately model-based, not URL-based: the same model served via
+        # the gateway or directly produces the same vectors, so switching
+        # the transport must not trigger a pointless corpus re-embed.
+        self.fingerprint = f"openai:{model}:{dim}"
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         payload = {"model": self.model, "input": list(texts)}

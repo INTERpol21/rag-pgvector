@@ -6,6 +6,20 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-24
+
+### Added
+- Automatic re-embed on embedder switch. Every embedder now carries a
+  `fingerprint` naming its vector space (`hash:256`, `semantic:256`,
+  `openai:<model>:<dim>` — model-based, so moving the same model between the
+  gateway and a direct connection does not re-embed). The store records the
+  fingerprint that wrote it (pgvector: new `index_meta` table, migration 008);
+  on startup a mismatch re-embeds every chunk with the active embedder before
+  the app serves traffic. Previously content-hash dedup kept the old model's
+  vectors forever after a same-dim backend switch, silently mixing
+  incompatible vector spaces. Stores written before fingerprints existed are
+  adopted as-is (the status quo assumption), not rewritten.
+
 ## [1.2.0] - 2026-07-23
 
 ### Added
