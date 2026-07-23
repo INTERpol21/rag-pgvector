@@ -27,4 +27,6 @@ curl -sf -X POST "$BASE/v1/ingest" \
   --data-binary @evals/promptfoo/corpus.json >/dev/null
 
 echo "→ running promptfoo eval"
-npx -y promptfoo@latest eval -c evals/promptfoo/promptfooconfig.yaml
+# Pinned: @latest made the gate depend on whatever promptfoo shipped that day,
+# and re-downloaded it on every CI run. Bump deliberately.
+npx -y promptfoo@0.121.19 eval -c evals/promptfoo/promptfooconfig.yaml

@@ -54,6 +54,12 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      # npx re-downloads promptfoo on every run without this; the version is
+      # pinned in run.sh, so the cache key only rotates on a deliberate bump.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-promptfoo-${{ runner.os }}-${{ hashFiles('evals/promptfoo/run.sh') }}
       - run: uv sync --frozen
       - name: promptfoo eval
         run: bash evals/promptfoo/run.sh
