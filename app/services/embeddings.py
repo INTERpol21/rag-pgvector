@@ -4,21 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import math
-import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 
 from app.core.errors import ProviderError
+from app.services.textnorm import normalize_tokens
 
 if TYPE_CHECKING:
     from app.core.settings import Settings
 
-# Unicode word tokens, same model as the BM25 leg in app/db/store.py. An
-# ASCII-only regex made every non-Latin text hash to the zero vector, so a
-# Russian corpus was unsearchable in the offline embedder.
-_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+# Token model shared with the BM25 leg via app/services/textnorm.py: Unicode
+# tokens + per-script Snowball stemming, so word forms ("поиск"/"поиске",
+# "index"/"indexes") hash to the same features and retrieval survives
+# inflected queries.
 
 
 @runtime_checkable
@@ -35,7 +35,7 @@ class Embedder(Protocol):
 class HashingEmbedder:
     """Deterministic feature-hashing embedder for offline demos and tests.
 
-    Lowercased ASCII word tokens are hashed (md5, stable across processes)
+    Snowball-stemmed Unicode word tokens (see textnorm.py) are hashed (md5, stable across processes)
     into ``dim`` buckets; the term-count vector is L2-normalized, so the dot
     product of two embeddings equals their cosine similarity.
 
@@ -58,7 +58,7 @@ class HashingEmbedder:
 
     def _embed_one(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
-        for token in _TOKEN_RE.findall(text.lower()):
+        for token in normalize_tokens(text):
             vec[self._bucket(token)] += 1.0
         norm = math.sqrt(sum(v * v for v in vec))
         if norm > 0.0:
@@ -89,9 +89,15 @@ _CONCEPT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("weather", ("rain", "storm", "sunny", "cloud", "clouds", "forecast",
                  "temperature", "humid", "snow")),
 )
-# token -> concept key, built once at import time.
+# STEMMED token -> concept key, built once at import time. Keys go through the
+# same normalizer as query/document tokens, so inflected forms ("queries" →
+# "queri") keep hitting their concept after stemming; the listed forms of one
+# word simply collapse onto the same key.
 _TOKEN_CONCEPT: dict[str, str] = {
-    token: concept for concept, tokens in _CONCEPT_GROUPS for token in tokens
+    stemmed: concept
+    for concept, tokens in _CONCEPT_GROUPS
+    for token in tokens
+    for stemmed in normalize_tokens(token)
 }
 
 
@@ -150,7 +156,7 @@ class SemanticMockEmbedder:
 
     def _embed_one(self, text: str) -> list[float]:
         acc = [0.0] * self.dim
-        for token in _TOKEN_RE.findall(text.lower()):
+        for token in normalize_tokens(text):
             direction = self._direction(token)
             for i, v in enumerate(direction):
                 acc[i] += v

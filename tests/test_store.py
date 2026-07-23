@@ -62,8 +62,10 @@ async def test_bm25_handles_non_latin_corpus():
         [_chunk("ru:0", "ru", 0, "Привет мир это заметка о векторном поиске", [1.0, 0.0])],
     )
 
-    # exact word forms: BM25 has no stemming, only Unicode tokenization
-    results = await store.search_bm25("заметка мир", top_k=4)
+    # INFLECTED word forms: Snowball stemming must fold "заметку"/"заметка"
+    # and "мире"/"мир" onto the same stems (this is the multilingual-retrieval
+    # regression guard — an ASCII-only or stemless tokenizer fails here).
+    results = await store.search_bm25("заметку о мире", top_k=4)
     assert [r.chunk_id for r in results] == ["ru:0"]
 
     # Mixed-script queries must not crash even when only one leg matches.

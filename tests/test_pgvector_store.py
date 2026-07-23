@@ -125,3 +125,29 @@ async def test_pgvector_roundtrip_integration():
         assert stats["documents"] >= 1 and stats["chunks"] >= 2
     finally:
         await store.close()
+
+
+@_INTEGRATION
+async def test_russian_word_forms_match_via_fts(fresh_pg_dsn):
+    """The pgvector keyword leg must stem Russian: an inflected query has to
+    outrank a vector-favoured distractor purely on the FTS hit (migrations/007
+    + websearch_to_tsquery('russian')). Under the old 'simple' config the
+    keyword leg returns nothing for word forms and the distractor wins."""
+    store = PgVectorStore(fresh_pg_dsn, dim=4)
+    await store.connect()
+    try:
+        await store.ensure_schema()
+        await store.upsert(
+            DocumentRecord(id="ru", title="Заметка"),
+            [ChunkRecord("ru:0", "ru", 0, "заметка о векторном поиске", [1.0, 0.0, 0.0, 0.0])],
+        )
+        await store.upsert(
+            DocumentRecord(id="noise", title="Distractor"),
+            [ChunkRecord("noise:0", "noise", 0, "nothing relevant here", [0.0, 1.0, 0.0, 0.0])],
+        )
+        # Query vector favours the distractor; the words favour the Russian
+        # chunk only if stemming folds "векторный поиск" onto "векторном поиске".
+        results = await store.search_hybrid([0.0, 1.0, 0.0, 0.0], "векторный поиск", top_k=2)
+        assert results[0].chunk_id == "ru:0"
+    finally:
+        await store.close()

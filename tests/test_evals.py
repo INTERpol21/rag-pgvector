@@ -15,7 +15,7 @@ from evals.run_evals import (
 async def test_eval_runner_smoke_on_three_goldens():
     summary = await run_evals(limit=3, judge=MockJudge())
     assert len(summary.items) == 3
-    assert summary.documents == 4  # bundled corpus
+    assert summary.documents == 5  # bundled corpus (incl. the Russian note)
     assert summary.chunks >= summary.documents
 
     # metrics land in sane ranges on the bundled corpus

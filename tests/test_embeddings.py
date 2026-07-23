@@ -93,3 +93,12 @@ def test_build_embedder_selects_backends():
 
     with pytest.raises(ValueError):
         build_embedder(Settings(embeddings_backend="nope", **base))
+
+
+async def test_inflected_forms_embed_almost_identically():
+    """Stemming in the offline embedder: word forms must land on the same
+    features, or an inflected Russian query misses its own document."""
+    embedder = HashingEmbedder(dim=64)
+    [a] = await embedder.embed(["векторный поиск"])
+    [b] = await embedder.embed(["векторном поиске"])
+    assert _dot(a, b) > 0.99
