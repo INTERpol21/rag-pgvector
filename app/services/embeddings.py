@@ -201,6 +201,18 @@ def build_embedder(settings: Settings) -> Embedder:
         return HashingEmbedder(dim=settings.embedding_dim)
     if backend == "semantic":
         return SemanticMockEmbedder(dim=settings.embedding_dim)
+    if backend == "gateway":
+        # Same wire protocol as "openai", but through the sibling llm-gateway's
+        # /v1/embeddings — one entrypoint, one usage/cost ledger, retries and
+        # fallbacks for free. Reuses the LLM_* connection settings (the gateway
+        # is already configured for synthesis); EMBEDDING_MODEL must name a
+        # route the gateway knows (offline: mock-small).
+        return OpenAIEmbedder(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.embedding_model,
+            dim=settings.embedding_dim,
+        )
     if backend == "openai":
         # dim must come from settings: the store builds its pgvector schema
         # from embedder.dim, so a hard-coded default here would silently size
