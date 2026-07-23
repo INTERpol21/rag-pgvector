@@ -70,6 +70,7 @@ def test_build_embedder_selects_backends():
             embeddings_backend="gateway",
             llm_base_url="http://gw:8080/v1",
             llm_api_key="k",
+            embeddings_timeout_s=7.5,
             **base,
         )
     )
@@ -79,6 +80,7 @@ def test_build_embedder_selects_backends():
     assert gateway.api_key == "k"
     assert gateway.model == "mock-small"
     assert gateway.dim == 64
+    assert gateway.timeout_s == 7.5
 
     openai = build_embedder(
         Settings(embeddings_backend="openai", openai_base_url="http://api/v1", **base)

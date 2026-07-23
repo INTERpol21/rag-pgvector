@@ -212,6 +212,7 @@ def build_embedder(settings: Settings) -> Embedder:
             api_key=settings.llm_api_key,
             model=settings.embedding_model,
             dim=settings.embedding_dim,
+            timeout_s=settings.embeddings_timeout_s,
         )
     if backend == "openai":
         # dim must come from settings: the store builds its pgvector schema
@@ -223,5 +224,6 @@ def build_embedder(settings: Settings) -> Embedder:
             api_key=settings.openai_api_key,
             model=settings.embedding_model,
             dim=settings.embedding_dim,
+            timeout_s=settings.embeddings_timeout_s,
         )
     raise ValueError(f"unknown EMBEDDINGS_BACKEND: {settings.embeddings_backend!r}")

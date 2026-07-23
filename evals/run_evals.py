@@ -142,6 +142,7 @@ def build_judge(settings: Settings) -> Judge:
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
             model=settings.llm_model,
+            timeout_s=settings.llm_timeout_s,
         )
     raise ValueError(f"unknown JUDGE_BACKEND: {backend!r}")
 
