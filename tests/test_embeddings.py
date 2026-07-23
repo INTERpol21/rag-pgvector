@@ -52,3 +52,42 @@ async def test_non_latin_text_embeds_to_nonzero_vector():
     # Determinism must hold for Unicode input too.
     [again] = await embedder.embed(["Привет мир это заметка"])
     assert vec == again
+
+
+def test_build_embedder_selects_backends():
+    """The factory is string-dispatch on EMBEDDINGS_BACKEND; every branch and
+    its wiring matters — the openai branch once dropped EMBEDDING_DIM entirely."""
+    from app.core.settings import Settings
+    from app.services.embeddings import OpenAIEmbedder, build_embedder
+
+    base = {"embedding_dim": 64, "embedding_model": "mock-small"}
+
+    hashing = build_embedder(Settings(embeddings_backend="hash", **base))
+    assert isinstance(hashing, HashingEmbedder) and hashing.dim == 64
+
+    gateway = build_embedder(
+        Settings(
+            embeddings_backend="gateway",
+            llm_base_url="http://gw:8080/v1",
+            llm_api_key="k",
+            **base,
+        )
+    )
+    assert isinstance(gateway, OpenAIEmbedder)
+    # The gateway branch must reuse the LLM connection settings — not OPENAI_*.
+    assert gateway.base_url == "http://gw:8080/v1"
+    assert gateway.api_key == "k"
+    assert gateway.model == "mock-small"
+    assert gateway.dim == 64
+
+    openai = build_embedder(
+        Settings(embeddings_backend="openai", openai_base_url="http://api/v1", **base)
+    )
+    assert isinstance(openai, OpenAIEmbedder)
+    assert openai.base_url == "http://api/v1"
+    assert openai.dim == 64
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_embedder(Settings(embeddings_backend="nope", **base))

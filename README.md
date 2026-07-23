@@ -107,7 +107,7 @@ Ingested data is treated as *your* data. Each document carries `source` (`local`
 |---|---|---|
 | `RAG_API_KEYS` | `demo-key` | comma-separated bearer tokens for `/ingest`, `/ingest/file`, `/query`, `/stats` |
 | `STORE_BACKEND` | `memory` | `memory` or `pgvector` (`DATABASE_URL` for the latter) |
-| `EMBEDDINGS_BACKEND` | `hash` | `hash` (256-d, deterministic) · `semantic` (offline synonym-aware mock) · `openai` |
+| `EMBEDDINGS_BACKEND` | `hash` | `hash` (256-d, deterministic) · `semantic` (offline synonym-aware mock) · `openai` (direct) · `gateway` (via the sibling llm-gateway's `/v1/embeddings` — one entrypoint, one usage ledger; uses `LLM_BASE_URL`/`LLM_API_KEY`, and `EMBEDDING_MODEL` must name a gateway route) |
 | `EMBEDDING_DIM` | `256` | dimension for the offline embedders / the `vector(N)` column |
 | `SEARCH_MODE` | `hybrid` | `hybrid` (RRF of vector + keyword) or `vector` (cosine-only) |
 | `RERANKER` | `none` | `none`, `mock` (lexical overlap) or `llm` (batched 0–10 scoring call) |

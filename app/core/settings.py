@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
 
     # --- Embeddings ---
-    embeddings_backend: str = "hash"  # hash | semantic | openai
+    embeddings_backend: str = "hash"  # hash | semantic | openai | gateway
     embedding_dim: int = 256  # used by the hashing embedder
     embedding_model: str = "text-embedding-3-small"
     openai_base_url: str = "https://api.openai.com/v1"

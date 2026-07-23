@@ -6,6 +6,20 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-23
+
+### Added
+- `EMBEDDINGS_BACKEND=gateway`: fetch vectors through the sibling llm-gateway's
+  `/v1/embeddings` instead of embedding in-process — one platform entrypoint,
+  one usage/cost ledger, retries and fallbacks inherited from the gateway.
+  Reuses the `LLM_BASE_URL`/`LLM_API_KEY` connection; `EMBEDDING_MODEL` must
+  name a gateway route (offline: `mock-small`).
+
+### Changed
+- CI runs the 11 pgvector integration tests against a real Postgres service
+  container (87 tests, zero skips) and fails loudly if they ever silently skip
+  again.
+
 ## [1.0.0] - 2026-07-21
 
 First tagged release. A RAG service on FastAPI + Postgres/pgvector with hybrid
