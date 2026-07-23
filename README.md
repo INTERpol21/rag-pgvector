@@ -136,13 +136,13 @@ make lint                         # ruff check app tests evals
 make typecheck                    # strict mypy over app
 ```
 
-80 tests run offline against the in-memory stack. The 11 `PgVectorStore` integration tests (`tests/test_pgvector_store.py`, `tests/test_pgvector_deep.py`) skip unless `DATABASE_URL` points at a live pgvector Postgres (compose db: `postgresql://rag:rag@localhost:5433/rag`).
+78 tests run offline against the in-memory stack. The 9 `PgVectorStore` integration tests (`tests/test_pgvector_store.py`, `tests/test_pgvector_deep.py`) skip unless `DATABASE_URL` points at a live pgvector Postgres (compose db: `postgresql://rag:rag@localhost:5433/rag`).
 
 ## Developer experience
 
 - **uv** for dependency management with a committed `uv.lock`; `requirements*.txt` are exported for Docker/pip users (`make lock`).
 - **ruff** lint + **strict mypy** (`disallow_untyped_defs`, `disallow_any_generics`, …); enforced by pre-commit hooks and CI.
-- **Docker**: `python:3.10-slim`, non-root user, `HEALTHCHECK`, `.dockerignore`.
+- **Docker**: `python:3.14-slim`, non-root user, `HEALTHCHECK`, `.dockerignore`.
 - **CI**: test job (ruff → mypy → pytest → evals gate) plus a security job (pip-audit CVE scan + bandit SAST), a CodeQL workflow, and Dependabot (uv / actions / docker).
 
 ---

@@ -15,7 +15,10 @@ from app.core.errors import ProviderError
 if TYPE_CHECKING:
     from app.core.settings import Settings
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Unicode word tokens, same model as the BM25 leg in app/db/store.py. An
+# ASCII-only regex made every non-Latin text hash to the zero vector, so a
+# Russian corpus was unsearchable in the offline embedder.
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 @runtime_checkable
@@ -199,9 +202,14 @@ def build_embedder(settings: Settings) -> Embedder:
     if backend == "semantic":
         return SemanticMockEmbedder(dim=settings.embedding_dim)
     if backend == "openai":
+        # dim must come from settings: the store builds its pgvector schema
+        # from embedder.dim, so a hard-coded default here would silently size
+        # the schema for one model while the API returns another width and
+        # every insert would then die on the dimension guard.
         return OpenAIEmbedder(
             base_url=settings.openai_base_url,
             api_key=settings.openai_api_key,
             model=settings.embedding_model,
+            dim=settings.embedding_dim,
         )
     raise ValueError(f"unknown EMBEDDINGS_BACKEND: {settings.embeddings_backend!r}")

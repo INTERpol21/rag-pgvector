@@ -35,8 +35,11 @@ if TYPE_CHECKING:
 
     from app.core.settings import Settings
 
-# Same token model as the hashing embedder: lowercased ASCII word tokens.
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Lowercased Unicode word tokens. Must stay Unicode-aware: the Postgres keyword
+# leg tokenizes with the 'simple' FTS config, which handles any script — an
+# ASCII-only regex here made the two legs disagree, left BM25 blind to
+# non-Latin corpora, and (with every chunk length at 0) crashed avg_len math.
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 # BM25 (Okapi) constants: k1 saturates term frequency, b scales length
 # normalization. RRF_K dampens the influence of exact ranks in the fusion.
@@ -279,6 +282,11 @@ class MemoryVectorStore:
         if not query_tokens or n_chunks == 0:
             return []
         avg_len = sum(self._chunk_lens.values()) / n_chunks
+        if avg_len == 0.0:
+            # Every chunk tokenized to nothing (e.g. punctuation-only corpus):
+            # no keyword evidence exists, and the length norm below would
+            # divide by zero. The vector leg still serves such corpora.
+            return []
         scored: list[ScoredChunk] = []
         for chunk in self._chunks.values():
             freqs = self._term_freqs[chunk.id]
