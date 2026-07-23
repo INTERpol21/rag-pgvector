@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     embeddings_backend: str = "hash"  # hash | semantic | openai | gateway
     embedding_dim: int = 256  # used by the hashing embedder
     embedding_model: str = "text-embedding-3-small"
+    # HTTP timeout for the openai/gateway embedding backends — the synthesis
+    # path has llm_timeout_s; embeddings deserve the same operator knob.
+    embeddings_timeout_s: float = 30.0
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str = ""
 
