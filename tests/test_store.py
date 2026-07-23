@@ -46,3 +46,35 @@ async def test_memory_store_upsert_replaces_and_stats():
     results = await store.search([0.0, 1.0], top_k=10)
     assert [r.chunk_id for r in results] == ["d1:0"]
     assert results[0].content == "a2"
+
+
+async def test_bm25_handles_non_latin_corpus():
+    """An all-Cyrillic corpus used to crash BM25 with ZeroDivisionError.
+
+    The old ASCII-only tokenizer gave every chunk zero tokens, so avg_len was 0
+    and the length normalisation divided by it — every /v1/query against a
+    Russian corpus was a 500 in the default hybrid mode. The tokenizer is now
+    Unicode-aware, so the same corpus must be searchable by keyword.
+    """
+    store = MemoryVectorStore()
+    await store.upsert(
+        DocumentRecord(id="ru", title="Заметка"),
+        [_chunk("ru:0", "ru", 0, "Привет мир это заметка о векторном поиске", [1.0, 0.0])],
+    )
+
+    # exact word forms: BM25 has no stemming, only Unicode tokenization
+    results = await store.search_bm25("заметка мир", top_k=4)
+    assert [r.chunk_id for r in results] == ["ru:0"]
+
+    # Mixed-script queries must not crash even when only one leg matches.
+    assert await store.search_bm25("привет hello", top_k=4)
+
+
+async def test_bm25_empty_token_corpus_returns_no_matches():
+    """Punctuation-only chunks tokenize to nothing; BM25 must return [] not 500."""
+    store = MemoryVectorStore()
+    await store.upsert(
+        DocumentRecord(id="p", title="Punct"),
+        [_chunk("p:0", "p", 0, "!!! ??? --- ...", [1.0, 0.0])],
+    )
+    assert await store.search_bm25("anything", top_k=4) == []

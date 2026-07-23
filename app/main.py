@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app import __version__
 from app.api.routes import health, ingest, query, stats
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
@@ -47,8 +48,10 @@ def create_app(
         # Only the pgvector backend owns real resources (asyncpg pool).
         if isinstance(app.state.store, PgVectorStore):
             await app.state.store.connect()
-            await app.state.store.ensure_schema()
+            # ensure_schema inside the try: its dimension guard is a documented
+            # fail-fast path, and failing it must still close the asyncpg pool.
             try:
+                await app.state.store.ensure_schema()
                 yield
             finally:
                 await app.state.store.close()
@@ -58,7 +61,7 @@ def create_app(
 
     app = FastAPI(
         title="rag-pgvector",
-        version="0.1.0",
+        version=__version__,
         description="RAG service: ingest -> chunk -> embed -> vector search -> "
         "LLM synthesis with [n] citations.",
         lifespan=lifespan,

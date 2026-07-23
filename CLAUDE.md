@@ -1,0 +1,83 @@
+# CLAUDE.md — rag-pgvector
+
+Working notes for AI agents. Generated from a code-level survey (2026-07-23); verify paths still exist before relying on them.
+
+Portfolio RAG service (FastAPI, port 8081): two pipelines — ingest (chunk 800/150 -> embed -> upsert) and query (embed -> hybrid retrieve -> optional rerank -> grounded LLM synthesis with inline [n] citations). Hybrid retrieval fuses a cosine-vector leg and a keyword leg (Okapi BM25 in memory, Postgres FTS in pgvector) with Reciprocal Rank Fusion (k=60). Local-first provenance (source/priority/owner) boosts the user's own data above web. Runs fully offline by default (MemoryVectorStore + HashingEmbedder + MockLLM, no keys, no DB); env vars switch to pgvector/asyncpg and OpenAI-compatible backends — LLM_BASE_URL defaults to the sibling llm-gateway on :8080/v1. An evals harness (hit_rate@k, citation_presence, LLM-as-a-Judge) plus a promptfoo OWASP-LLM red-team suite gate CI.
+
+## Commands
+```bash
+make install-dev && make test
+make lint && make typecheck
+make run                        # uvicorn on :8081
+make eval                       # LLM-as-judge eval harness (writes evals/report.md)
+make lock                       # regen uv.lock + requirements*.txt
+```
+
+## Layout
+- `app/main.py` — App factory `create_app(settings, *, store, embedder, llm, reranker)` — DI seams for tests; lifespan connects PgVectorStore + runs migrations; mounts routers under /v1 (only /healthz unversioned); components live on app.state
+- `app/core/` — settings.py (pydantic-settings, UPPER_CASE env vars + .env, offline defaults), security.py (constant-time bearer auth via secrets.compare_digest), errors.py (ProviderError -> generic 502, details logged server-side only), logging.py (JSON lines), middleware.py (X-Request-ID echo, capped at 128 chars, one log line per request)
+- `app/api/routes/` — Thin HTTP handlers: ingest.py (POST /v1/ingest JSON + /v1/ingest/file upload with capped chunked read), query.py (POST /v1/query), stats.py (GET /v1/stats — backends + counts), health.py (GET /healthz). deps.py re-exports require_api_key
+- `app/schemas/__init__.py` — Pydantic DTOs + input bounds (MAX_TEXT_CHARS=1M, MAX_DOCS_PER_REQUEST=100, MAX_QUESTION_CHARS=10k, MAX_METADATA_BYTES=64k), content_hash(title,text), SOURCE_DEFAULT_PRIORITY {local:100, other:50, web:0} with a before-validator deriving priority from source
+- `app/services/` — Framework-free logic: chunking.py (recursive char splitter, exact-substring + fixed-overlap guarantees), embeddings.py (HashingEmbedder / SemanticMockEmbedder / OpenAIEmbedder behind Embedder protocol), llm.py (SYSTEM_PROMPT + fenced untrusted context + _defang_fence; MockLLM / GroundedMockLLM / OpenAIChatLLM), rerank.py (MockReranker lexical, LLMReranker batched 0-10 scoring with parse_scores fallback), citations.py (resolve 1-based [n] against retrieved list, drop out-of-range), ingest.py (shared chunk->embed->upsert with content-hash dedup), extract.py (md/txt/pdf/docx via pypdf / python-docx, 10 MB cap)
+- `app/db/` — store.py — VectorStore protocol; MemoryVectorStore (exact cosine + maintained BM25 token index); PgVectorStore (asyncpg pool 1-5, cosine <=> SQL + tsvector FTS SQL, startup dimension guard via pg_attribute.atttypmod); rrf_merge/merge_ranked/candidate_pool/search_with_mode (mode dispatch + source filter + priority re-sort). migrations.py — filesystem migration loader (NNN_name.sql, schema_migrations tracking, {dim} string substitution)
+- `migrations/` — 001_init (extension, documents, chunks, vector({dim})), 002_hnsw (HNSW cosine index), 003_fts (generated content_tsv 'simple' + GIN), 004_document_id_index, 005_source_tags (source/priority/owner), 006_hnsw_tuning (drop+recreate m=16 ef_construction=200, ANALYZE)
+- `evals/` — run_evals.py (offline harness: fresh memory index from data/*.md, golden.jsonl questions, MockJudge/OpenAIJudge, writes report.md, --min-hit-rate CI gate); promptfoo/ (run.sh boots the service on :8081, seeds corpus.json, runs OWASP LLM01/LLM07 assertions)
+- `tests/` — 14 files, ~80 offline tests + 11 pgvector integration tests (test_pgvector_store.py, test_pgvector_deep.py) skipped without DATABASE_URL; conftest.py has httpx ASGITransport client fixtures and fresh_pg_dsn (per-test throwaway database)
+- `data/` — 4-note demo corpus (*.md) — the evals index source; document id = file stem, matched by golden.jsonl expected_document_id
+- `.github/workflows/` — ci.yml (test job: uv-export drift check -> ruff -> mypy -> pytest -> evals gate 0.8; security job: pip-audit + bandit; llm-eval job: promptfoo via Node 22), codeql.yml, tag-release.yml (tags v{pyproject version} on main, requires matching CHANGELOG section)
+
+## Invariants (breaking these breaks the platform)
+- requirements.txt / requirements-dev.txt are EXPORTED from uv.lock (`make lock`), never hand-edited; the Docker image installs from requirements.txt and never reads uv.lock; CI re-exports and fails on `git diff --exit-code`, so editing pyproject.toml requires `make lock` and committing all three files
+- Every API route lives under /v1 (only /healthz is unversioned) — deliberately aligned with the sibling llm-gateway so the shared contracts package has one shape; tests and promptfoo call /v1/... paths
+- LLM/embeddings base URLs include /v1 (llm_base_url default http://localhost:8080/v1); code appends only /chat/completions or /embeddings
+- Priority defaults are derived from source in the SCHEMA layer (DocumentIn before-validator: local=100, other=50, web=0) — DocumentRecord itself defaults priority=0. Anything constructing DocumentRecord directly (as evals/run_evals.py does) bypasses the local-first defaults
+- Local-first correctness depends on over-fetching: search_with_mode fetches candidate_pool(top_k)=max(top_k*4,20) whenever a source filter or priority boost is active, so filtering cannot starve results; both store backends must honor larger top_k requests
+- Chunk ids are deterministic "{document_id}:{ord}" and citations [n] are 1-based positions in the retrieved list; GroundedMockLLM only emits indices of chunks it used, and extract_citations resolves against that exact list — reordering retrieved after synthesis would corrupt citations
+- Migration files MUST match ^\d{3}_[a-z0-9_]+\.sql$ with unique numbers; load_migrations raises ValueError on any other non-hidden file, so a stray file in migrations/ prevents pgvector-mode startup. Files must also stay idempotent (IF NOT EXISTS) because PgVectorStore.schema_sql concatenates all of them
+- The '{dim}' marker in migrations is replaced by plain string replacement with the embedder dim; the embedding dimension is frozen per database — _assert_dimension (reads pg_attribute.atttypmod for chunks.embedding) fails startup on mismatch; changing EMBEDDING_DIM/embedder requires a fresh schema
+- FTS config 'simple' must match on both sides: the generated content_tsv column (migrations/003) and KEYWORD_SEARCH_SQL's websearch_to_tsquery('simple', ...) — changing one without the other silently breaks keyword recall
+- Rerankers reorder only, never rescore — chunks keep their retrieval scores so score provenance stays honest (documented contract in app/services/rerank.py)
+- All offline embedders L2-normalize so dot product == cosine similarity, matching pgvector's vector_cosine_ops / 1-(a<=>b) scoring; both backends sort ties by chunk_id for determinism
+- Retrieved content passes through _defang_fence (runs of 3+ hyphens collapsed to '--') before entering the prompt so a poisoned chunk cannot forge the '----- END CONTEXT -----' fence line; changing the fence markers requires keeping the defang regex in sync (regression tests in tests/test_prompt_security.py)
+- content_hash == '' means 'unknown' and never matches (both stores filter empty hashes), so pre-hash rows always re-ingest rather than being wrongly skipped
+- Version in pyproject.toml is the single release trigger; tag-release.yml refuses to tag without a matching '## [x.y.z]' CHANGELOG.md section and never re-tags an existing version
+- create_app is a factory with DI: any component not passed explicitly is built from Settings via build_store/build_embedder/build_llm/build_reranker (string-dispatch on env values); components are reached only through request.app.state — no module-level singletons
+
+## Gotchas
+- evals/report.md is a regenerated artifact — every run_evals.py invocation overwrites it (and CI runs it). Never hand-edit it; commit churn there is expected
+- The 11 pgvector integration tests silently SKIP without DATABASE_URL, so a green local `make test` proves nothing about the Postgres paths. The compose database is published on host port 5433, while Settings.database_url defaults to localhost:5432 — the correct local DSN is postgresql://rag:rag@localhost:5433/rag
+- conftest.py's fresh_pg_dsn fixture runs `CREATE DATABASE ... OWNER rag` — integration tests hard-assume the DB role is named `rag`; pointing DATABASE_URL at another superuser fails on that line
+- README claims the Docker image is python:3.10-slim but the Dockerfile actually uses python:3.14-slim (doc drift); requires-python is >=3.10
+- Editing pyproject.toml dependencies without running `make lock` passes local tests (uv.lock unchanged? no — sync fails) but the subtle trap is the reverse: updating uv.lock without re-exporting keeps tests green while the Docker image (built from requirements.txt) is missing the dep; CI's export-drift step is the only guard
+- Any stray non-hidden file dropped into migrations/ (e.g. a README.md or backup file) makes load_migrations raise and pgvector-mode startup fail; hidden dotfiles are the only tolerated exception
+- extract_citations silently drops hallucinated/out-of-range [n] references, and LLMReranker's parse_scores returning None silently falls back to the original order — a broken real-LLM integration degrades invisibly instead of erroring; check `citations: []` and ordering, not just 200s
+- OpenAIChatLLM creates its httpx client with trust_env=False (system proxies deliberately bypassed for the internal gateway) but OpenAIEmbedder does NOT — embeddings traffic can be proxied while synthesis cannot; easy to misdiagnose as a networking bug
+- MockLLM only cites the top 2 chunks (max_chunks=2) and answers extractively; GroundedMockLLM (LLM_BACKEND=grounded) additionally abstains with the distinct NOT_IN_SOURCES_ANSWER — tests asserting on exact answer text depend on which mock is wired, and the promptfoo suite runs against the default MockLLM via run.sh
+- The eval judge defaults to MockJudge (keyword overlap mapped to 1-5) — judge_score in report.md is NOT a real quality signal offline; only hit_rate is gated in CI
+- evals/promptfoo/run.sh starts its own uvicorn on :8081 — it will collide with an already-running dev server on the same port
+- migration 006 DROPs and rebuilds the HNSW index and runs ANALYZE — on a large existing table this makes the first startup after upgrade slow; it is applied automatically inside the app lifespan, not by a separate migration command
+- chunks_indexed in the ingest response excludes skipped (hash-unchanged) documents, but document_ids still lists them — don't treat len(document_ids) == indexing work
+- mypy strict covers only app/ (Makefile: `mypy app`); tests/ and evals/ are ruff-linted but not typechecked — type errors there surface only at runtime
+- MemoryVectorStore keeps everything in process memory — restarting the dev server wipes the index; re-seed before manual /v1/query testing
+
+## Key flows
+- Ingest: POST /v1/ingest (JSON) or /v1/ingest/file (upload -> _read_capped -> extract_text) -> services/ingest.ingest_documents: sha256(title+text) compared against store.content_hashes (unchanged docs skipped before any chunk/embed work) -> chunk_text(800/150) -> ONE batched embedder.embed for the whole request -> store.upsert per doc (doc upsert, DELETE old chunks, INSERT new; chunk id = "{doc_id}:{ord}") -> {document_ids, chunks_indexed, skipped}
+- Query: POST /v1/query -> embed question -> search_with_mode(SEARCH_MODE): hybrid runs vector + keyword legs each over candidate_pool(top_k)=max(top_k*4,20), RRF-merged (scores become RRF scores, ties break by chunk_id); then optional `sources` strict filter and priority re-sort (-priority, -score, chunk_id) -> optional reranker.rerank (reorders only) -> llm.answer(build_messages: system prompt + '----- BEGIN CONTEXT (untrusted data...)' fence with defanged content) -> extract_citations maps [n] (1-based, dedup, out-of-range dropped) -> QueryResponse{answer, citations, retrieved, usage}
+- Migrations: PgVectorStore.ensure_schema (called from app lifespan) applies migrations/NNN_name.sql in filename order inside per-migration transactions, tracked in schema_migrations, {dim} replaced with embedder.dim, then _assert_dimension fails startup on vector(N) mismatch
+- Evals: evals/run_evals.py builds a fresh MemoryVectorStore + HashingEmbedder, indexes data/*.md (id = file stem), runs the same search_with_mode + MockLLM + extract_citations per golden.jsonl row, overwrites evals/report.md, exits 1 when hit_rate < --min-hit-rate (CI: 0.8, make eval: 0.7)
+- Release: bump version in pyproject.toml + add '## [x.y.z]' to CHANGELOG.md -> merge to main -> tag-release.yml creates tag v{x.y.z} and a GitHub release whose notes are the changelog section verbatim
+
+## Conventions
+- uv is the source of truth (uv sync --frozen, CI pins uv 0.11.7); Makefile targets wrap it: install-dev, run, test, lint, typecheck, eval, lock
+- ruff (line-length 100, rules E/F/I/W/B/UP, B008 ignored for FastAPI Depends/File/Form defaults) over app+tests+evals; mypy strict (disallow_untyped_defs, disallow_any_generics, ...) over app ONLY
+- pytest.ini: asyncio_mode=auto (no @pytest.mark.asyncio needed), pythonpath=., testpaths=tests, addopts=-q
+- Layered layout: routes stay thin (HTTP only), business logic lives in services/ framework-free; swappable backends are Protocol + runtime_checkable (VectorStore, Embedder, LLM, Reranker) with build_*() factories that raise ValueError on unknown backend strings
+- No dict[str, Any] for structured data — pydantic models / TypedDicts; genuinely opaque JSON (metadata, usage) is typed dict[str, object]
+- Heavy/optional deps (asyncpg, pgvector, pypdf, docx, httpx-in-judge) are imported inside functions so the offline path never imports them
+- Settings fields map lower_snake -> UPPER_CASE env var, .env loaded, extra ignored; offline-safe defaults everywhere
+- Every fix gets a regression test; tests exercise the public surface with injected fakes, deterministic and offline; don't test trivial DTO/framework glue
+- Branches named claude/<topic>; small focused commits; pre-commit runs ruff --fix + mypy (system hook) + whitespace/yaml/toml checks
+- Errors: upstream failures raise ProviderError -> 502 with generic detail (never leak upstream topology); input violations -> 422; oversized uploads -> 413; unsupported types -> 415; auth -> 401 with WWW-Authenticate
+
+## Test strategy
+Two tiers. (1) ~80 offline deterministic tests (tests/, pytest asyncio_mode=auto): unit tests on services (chunking guarantees, citation resolution, prompt-injection fencing in test_prompt_security.py, grounded-mock behaviors, BM25/RRF math) plus API tests through httpx ASGITransport clients built from create_app with injected MemoryVectorStore/HashingEmbedder/MockLLM (conftest.py fixtures; every client sends Authorization: Bearer demo-key). (2) 11 integration tests (test_pgvector_store.py, test_pgvector_deep.py) gated by `pytest.mark.skipif(not os.getenv("DATABASE_URL"))`; the fresh_pg_dsn fixture provisions a uniquely-named throwaway database per test (CREATE DATABASE ... OWNER rag, installs the vector extension, force-terminates backends and drops it on teardown) so count-sensitive assertions and from-scratch migration runs are isolated. Beyond pytest: evals/run_evals.py is a retrieval-regression gate in CI (--min-hit-rate 0.8 over evals/golden.jsonl against data/*.md), and the llm-eval CI job runs promptfoo (evals/promptfoo/) as a live red-team of the /v1/query boundary (LLM01 injection, LLM07 prompt leak). CI also runs ruff, strict mypy (app only), pip-audit, bandit, CodeQL, and the requirements-export drift check.

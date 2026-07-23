@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
 
     # --- Embeddings ---
-    embeddings_backend: str = "hash"  # hash | openai
+    embeddings_backend: str = "hash"  # hash | semantic | openai
     embedding_dim: int = 256  # used by the hashing embedder
     embedding_model: str = "text-embedding-3-small"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     reranker: str = "none"  # none | mock | llm
 
     # --- LLM synthesis ---
-    llm_backend: str = "mock"  # mock | openai
+    llm_backend: str = "mock"  # mock | grounded | openai
     llm_base_url: str = "http://localhost:8080/v1"  # sibling llm-gateway
     llm_api_key: str = "demo-key"
     llm_model: str = "mock-small"

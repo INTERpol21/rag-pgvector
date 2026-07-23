@@ -40,3 +40,15 @@ async def test_similar_texts_closer_than_dissimilar():
         ]
     )
     assert _dot(query, similar) > _dot(query, dissimilar)
+
+
+async def test_non_latin_text_embeds_to_nonzero_vector():
+    """Cyrillic text used to hash to the zero vector (ASCII-only tokenizer),
+    making a Russian corpus unsearchable in the offline embedder."""
+    embedder = HashingEmbedder(dim=32)
+    [vec] = await embedder.embed(["Привет мир это заметка"])
+    assert any(v != 0.0 for v in vec)
+
+    # Determinism must hold for Unicode input too.
+    [again] = await embedder.embed(["Привет мир это заметка"])
+    assert vec == again

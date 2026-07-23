@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the OWASP-LLM promptfoo eval against a local rag service.
 #
-# Starts the service (offline: memory store + grounded mock LLM), seeds the
+# Starts the service with its offline defaults (memory store + mock LLM), seeds the
 # corpus so retrieval has context, runs promptfoo, then tears the service down.
 # Offline and deterministic — no network, no API keys.
 set -euo pipefail
