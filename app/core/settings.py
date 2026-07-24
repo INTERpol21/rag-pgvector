@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     port: int = 8081
     # Comma-separated bearer tokens accepted on /ingest, /query and /stats.
     rag_api_keys: str = "demo-key"
+    # Reject request bodies over this many bytes via Content-Length before
+    # they are buffered/parsed (413). The default fits a full legitimate
+    # ingest batch and the 10 MB file-upload cap; the pre-cap worst case was
+    # ~100 MB of JSON buffered before pydantic could say no.
+    max_request_bytes: int = 10 * 1024 * 1024
 
     # --- Chunking ---
     chunk_size: int = 800

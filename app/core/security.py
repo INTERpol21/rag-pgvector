@@ -12,9 +12,14 @@ async def require_api_key(request: Request) -> None:
     api_keys: frozenset[str] = request.app.state.api_keys
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     token = token.strip()
-    authorized = scheme.lower() == "bearer" and any(
-        secrets.compare_digest(token, key) for key in api_keys
-    )
+    # Compare against EVERY key, never short-circuiting: ``any()`` returns on
+    # the first match, so validation time would leak which key matched —
+    # the same strict contract the gateway and orchestrator already keep.
+    matched = False
+    for key in api_keys:
+        if secrets.compare_digest(token, key):
+            matched = True
+    authorized = scheme.lower() == "bearer" and matched
     if not authorized:
         raise HTTPException(
             status_code=401,
