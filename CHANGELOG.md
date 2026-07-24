@@ -6,6 +6,16 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-24
+
+### Fixed
+- The startup re-embed now runs under a Postgres advisory lock with a
+  fingerprint re-check: N replicas booting after an embedder switch used to
+  ALL re-embed the corpus (N x the gateway bill, interleaved writes, and a
+  window where an already-serving replica could read mixed-space vectors).
+  Now exactly one worker re-embeds; the rest block, re-check and find the
+  work done. Found by an adversarial audit of the fingerprint mechanism.
+
 ## [1.4.0] - 2026-07-24
 
 ### Added

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 
@@ -116,6 +117,8 @@ class VectorStore(Protocol):
     async def all_chunk_texts(self) -> list[tuple[str, str]]: ...
 
     async def update_embeddings(self, embeddings: dict[str, list[float]]) -> None: ...
+
+    def reindex_lock(self) -> AbstractAsyncContextManager[None]: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -353,6 +356,14 @@ class MemoryVectorStore:
             chunk = self._chunks.get(chunk_id)
             if chunk is not None:
                 self._chunks[chunk_id] = replace(chunk, embedding=list(embedding))
+
+    @asynccontextmanager
+    async def _noop_lock(self) -> AsyncIterator[None]:
+        yield
+
+    def reindex_lock(self) -> AbstractAsyncContextManager[None]:
+        # The memory index is per-process: there is no second replica to race.
+        return self._noop_lock()
 
 
 # --------------------------------------------------------------------------- #
@@ -613,6 +624,25 @@ class PgVectorStore:
                     UPDATE_EMBEDDING_SQL,
                     [(cid, Vector(vec)) for cid, vec in embeddings.items()],
                 )
+
+    @asynccontextmanager
+    async def _advisory_lock(self) -> AsyncIterator[None]:
+        # Session-level advisory lock on a dedicated connection: with N
+        # replicas booting after an embedder switch, exactly one re-embeds
+        # while the rest block here, then re-check the fingerprint and find
+        # the work already done (see services/reindex.py). The lock/unlock
+        # pair must run on the SAME connection, hence not pool.acquire()'s
+        # transaction helpers around individual statements.
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT pg_advisory_lock(hashtext('rag_reindex'))")
+            try:
+                yield
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(hashtext('rag_reindex'))")
+
+    def reindex_lock(self) -> AbstractAsyncContextManager[None]:
+        return self._advisory_lock()
 
 
 def build_store(settings: Settings, dim: int) -> VectorStore:
