@@ -39,12 +39,21 @@ async def sync_embedder_fingerprint(store: VectorStore, embedder: Embedder) -> s
         await store.set_embedder_fingerprint(embedder.fingerprint)
         return "adopted"
 
-    chunk_texts = await store.all_chunk_texts()
-    for start in range(0, len(chunk_texts), EMBED_BATCH_SIZE):
-        batch = chunk_texts[start : start + EMBED_BATCH_SIZE]
-        vectors = await embedder.embed([content for _, content in batch])
-        await store.update_embeddings(
-            {chunk_id: vector for (chunk_id, _), vector in zip(batch, vectors, strict=True)}
-        )
-    await store.set_embedder_fingerprint(embedder.fingerprint)
-    return f"reembedded:{len(chunk_texts)}"
+    # N replicas booting after a switch would otherwise ALL re-embed the
+    # corpus (N x the gateway bill) and interleave their writes. The store's
+    # reindex lock (pgvector: pg_advisory_lock) admits one worker; the rest
+    # block here, then the re-check finds the work already done.
+    async with store.reindex_lock():
+        stored = await store.embedder_fingerprint()
+        if stored == embedder.fingerprint:
+            return "match:after-wait"
+
+        chunk_texts = await store.all_chunk_texts()
+        for start in range(0, len(chunk_texts), EMBED_BATCH_SIZE):
+            batch = chunk_texts[start : start + EMBED_BATCH_SIZE]
+            vectors = await embedder.embed([content for _, content in batch])
+            await store.update_embeddings(
+                {chunk_id: vector for (chunk_id, _), vector in zip(batch, vectors, strict=True)}
+            )
+        await store.set_embedder_fingerprint(embedder.fingerprint)
+        return f"reembedded:{len(chunk_texts)}"

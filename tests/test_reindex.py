@@ -107,3 +107,39 @@ async def test_search_works_in_the_new_space_after_reembed():
     results = await store.search(query, top_k=1)
     assert results[0].chunk_id == "d0:0"
     assert results[0].score > 0.5
+
+
+async def test_second_replica_finds_the_work_done_under_the_lock():
+    """Cross-replica dedup: if another worker finished the re-embed while we
+    waited on the reindex lock, the re-check returns without re-embedding."""
+
+    class RacedStore(MemoryVectorStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.winner_fingerprint: str | None = None
+
+        def reindex_lock(self):  # type: ignore[override]
+            outer = super().reindex_lock()
+
+            class _Lock:
+                async def __aenter__(inner) -> None:
+                    await outer.__aenter__()
+                    # Simulate the other replica finishing while we waited.
+                    if self.winner_fingerprint is not None:
+                        self._embedder_fingerprint = self.winner_fingerprint
+
+                async def __aexit__(inner, *exc) -> bool | None:
+                    return await outer.__aexit__(*exc)
+
+            return _Lock()
+
+    store = RacedStore()
+    old = HashingEmbedder(dim=8)
+    await _ingest(store, old, ["alpha beta"])
+    await sync_embedder_fingerprint(store, old)
+    original = store._chunks["d0:0"].embedding
+
+    new = SemanticMockEmbedder(dim=8)
+    store.winner_fingerprint = new.fingerprint  # "другая реплика" уже всё сделала
+    assert await sync_embedder_fingerprint(store, new) == "match:after-wait"
+    assert store._chunks["d0:0"].embedding == original  # мы НЕ переэмбеддили
