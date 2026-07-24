@@ -7,7 +7,9 @@ WORKDIR /srv/rag-pgvector
 
 # requirements.txt is generated from pyproject.toml + uv.lock (see `make lock`).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# BuildKit cache mount: a dependency bump re-downloads only the changed
+# wheels instead of the whole set (--no-cache-dir kept nothing between builds).
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 COPY app ./app
 COPY data ./data
