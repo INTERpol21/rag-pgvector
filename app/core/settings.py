@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     db_pool_min_size: int = 1
     db_pool_max_size: int = 5
 
+    # Folder connector: when set, a background task polls this directory and
+    # auto-ingests every supported file (md/txt/pdf/docx). Content-hash dedup
+    # makes rescans free. Empty = off.
+    ingest_watch_dir: str = ""
+    ingest_watch_interval_s: float = 5.0
+
     # --- Chunking ---
     chunk_size: int = 800
     chunk_overlap: int = 150

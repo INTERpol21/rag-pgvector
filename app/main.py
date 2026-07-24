@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -18,6 +20,7 @@ from app.services.embeddings import Embedder, build_embedder
 from app.services.llm import LLM, build_llm
 from app.services.reindex import sync_embedder_fingerprint
 from app.services.rerank import Reranker, build_reranker
+from app.services.watcher import watch_forever
 
 
 def create_app(
@@ -58,17 +61,49 @@ def create_app(
             try:
                 await app.state.store.ensure_schema()
                 await _sync_fingerprint(app)
-                yield
+                watcher = _start_watcher(app)
+                try:
+                    yield
+                finally:
+                    await _stop_watcher(watcher)
             finally:
                 await app.state.store.close()
                 await _close_clients(app)
         else:
             await app.state.store.ensure_schema()
             await _sync_fingerprint(app)
+            watcher = _start_watcher(app)
             try:
                 yield
             finally:
+                await _stop_watcher(watcher)
                 await _close_clients(app)
+
+    def _start_watcher(app: FastAPI) -> asyncio.Task[None] | None:
+        if not settings.ingest_watch_dir:
+            return None
+        root = Path(settings.ingest_watch_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        return asyncio.create_task(
+            watch_forever(
+                root,
+                store=app.state.store,
+                embedder=app.state.embedder,
+                chunk_size=settings.chunk_size,
+                chunk_overlap=settings.chunk_overlap,
+                interval_s=settings.ingest_watch_interval_s,
+                logger=logger,
+            )
+        )
+
+    async def _stop_watcher(task: asyncio.Task[None] | None) -> None:
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _close_clients(app: FastAPI) -> None:
         # The OpenAI-backed embedder/LLM hold a shared httpx client (keep-alive
