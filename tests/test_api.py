@@ -310,3 +310,24 @@ async def test_llm_failure_maps_to_502(store, embedder):
     # upstream body) is logged server-side, never echoed to the API client.
     assert detail == "upstream provider unavailable"
     assert "timed out" not in detail
+
+
+async def test_oversized_body_is_rejected_before_parsing(client):
+    """A declared Content-Length over MAX_REQUEST_BYTES dies at the middleware
+    with 413 — previously ~100 MB of JSON was buffered before pydantic said no."""
+    resp = await client.post(
+        "/v1/ingest",
+        headers={"Authorization": "Bearer demo-key", "Content-Length": str(50 * 1024 * 1024)},
+        content=b"",
+    )
+    assert resp.status_code == 413
+    assert "over the" in resp.json()["detail"]
+
+
+async def test_normal_sized_body_passes_the_cap(client):
+    resp = await client.post(
+        "/v1/ingest",
+        headers={"Authorization": "Bearer demo-key"},
+        json={"documents": [{"id": "cap-ok", "title": "t", "text": "hello caps"}]},
+    )
+    assert resp.status_code == 200

@@ -6,6 +6,19 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-24
+
+### Added
+- Request body cap: bodies whose `Content-Length` exceeds `MAX_REQUEST_BYTES`
+  (default 10 MiB — sized for a legitimate ingest batch and the 10 MB file
+  cap) are rejected with 413 before buffering/parsing. Previously the schema
+  bounds allowed ~100 MB of JSON into memory before validation could refuse.
+
+### Fixed
+- API-key comparison no longer short-circuits: every configured key is
+  checked with `secrets.compare_digest`, closing the timing side-channel and
+  matching the strict contract the gateway and orchestrator already keep.
+
 ## [1.3.0] - 2026-07-24
 
 ### Added
