@@ -61,10 +61,23 @@ def create_app(
                 yield
             finally:
                 await app.state.store.close()
+                await _close_clients(app)
         else:
             await app.state.store.ensure_schema()
             await _sync_fingerprint(app)
-            yield
+            try:
+                yield
+            finally:
+                await _close_clients(app)
+
+    async def _close_clients(app: FastAPI) -> None:
+        # The OpenAI-backed embedder/LLM hold a shared httpx client (keep-alive
+        # to the gateway); offline mocks have no aclose — duck-typed on purpose
+        # so the Protocols stay minimal.
+        for component in (app.state.embedder, app.state.llm):
+            aclose = getattr(component, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     async def _sync_fingerprint(app: FastAPI) -> None:
         outcome = await sync_embedder_fingerprint(app.state.store, app.state.embedder)

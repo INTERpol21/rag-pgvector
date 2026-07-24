@@ -282,6 +282,21 @@ class OpenAIChatLLM:
         self.model = model
         self.timeout_s = timeout_s
         self.temperature = temperature
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        # One shared client per LLM instance (keep-alive to the gateway)
+        # instead of a fresh pool per synthesis call.
+        # trust_env=False: the synthesis endpoint is an internal service
+        # (usually the sibling llm-gateway); system proxies must not reroute it.
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout_s, trust_env=False)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def complete(self, messages: list[ChatMessage]) -> LLMResult:
         """Raw chat completion for arbitrary messages (also used by the
@@ -293,14 +308,12 @@ class OpenAIChatLLM:
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
-            # trust_env=False: the synthesis endpoint is an internal service
-            # (usually the sibling llm-gateway); system proxies must not reroute it.
-            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=False) as client:
-                resp = await client.post(
-                    f"{self.base_url}/chat/completions", json=payload, headers=headers
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            client = self._get_client()
+            resp = await client.post(
+                f"{self.base_url}/chat/completions", json=payload, headers=headers
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.HTTPError as exc:
             raise ProviderError(f"LLM provider failed: {exc}") from exc
         try:

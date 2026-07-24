@@ -451,9 +451,13 @@ class PgVectorStore:
 
     backend = "pgvector"
 
-    def __init__(self, dsn: str, dim: int) -> None:
+    def __init__(
+        self, dsn: str, dim: int, *, pool_min_size: int = 1, pool_max_size: int = 5
+    ) -> None:
         self.dsn = normalize_dsn(dsn)
         self.dim = dim
+        self._pool_min_size = pool_min_size
+        self._pool_max_size = pool_max_size
         self._pool: asyncpg.Pool | None = None
 
     @property
@@ -471,7 +475,10 @@ class PgVectorStore:
             await register_vector(conn)
 
         self._pool = await asyncpg.create_pool(
-            self.dsn, min_size=1, max_size=5, init=_init
+            self.dsn,
+            min_size=self._pool_min_size,
+            max_size=self._pool_max_size,
+            init=_init,
         )
 
     async def close(self) -> None:
@@ -651,5 +658,10 @@ def build_store(settings: Settings, dim: int) -> VectorStore:
     if backend == "memory":
         return MemoryVectorStore()
     if backend == "pgvector":
-        return PgVectorStore(dsn=settings.database_url, dim=dim)
+        return PgVectorStore(
+            dsn=settings.database_url,
+            dim=dim,
+            pool_min_size=settings.db_pool_min_size,
+            pool_max_size=settings.db_pool_max_size,
+        )
     raise ValueError(f"unknown STORE_BACKEND: {settings.store_backend!r}")

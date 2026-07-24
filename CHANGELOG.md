@@ -6,6 +6,21 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-24
+
+### Changed
+- Hot-path connection reuse: `OpenAIEmbedder` and `OpenAIChatLLM` keep one
+  shared httpx client per instance (closed by the app lifespan) instead of
+  building and tearing down a fresh connection pool on every call — a /v1/query
+  used to open two throwaway pools (embed + synthesize) per request.
+- `OpenAIEmbedder` now sets `trust_env=False` like the LLM client — embeddings
+  traffic to the internal gateway can no longer be rerouted by system proxy
+  variables (closes a long-documented inconsistency).
+
+### Added
+- `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` knobs for the pgvector asyncpg pool
+  (was hardcoded 1-5).
+
 ## [1.4.1] - 2026-07-24
 
 ### Fixed
