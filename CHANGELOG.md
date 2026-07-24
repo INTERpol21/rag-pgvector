@@ -6,6 +6,18 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-24
+
+### Added
+- Folder connector: set `INGEST_WATCH_DIR` and a background task polls the
+  directory (default every 5 s, `INGEST_WATCH_INTERVAL_S`), auto-ingesting
+  every supported file (md/txt/pdf/docx, subfolders included; document id =
+  relative path). Content-hash dedup makes rescans free; a file that fails
+  to parse is logged and skipped, and the loop survives store outages.
+  Deletions are deliberately not propagated (no delete surface on the
+  store yet). Polling, not inotify: filesystem events are unreliable
+  across Docker bind mounts.
+
 ## [1.5.0] - 2026-07-24
 
 ### Changed
