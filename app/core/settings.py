@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # ingest batch and the 10 MB file-upload cap; the pre-cap worst case was
     # ~100 MB of JSON buffered before pydantic could say no.
     max_request_bytes: int = 10 * 1024 * 1024
+    # asyncpg pool bounds for the pgvector store (capacity knob per replica;
+    # was hardcoded 1-5).
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 5
 
     # --- Chunking ---
     chunk_size: int = 800

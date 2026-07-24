@@ -143,3 +143,31 @@ async def test_second_replica_finds_the_work_done_under_the_lock():
     store.winner_fingerprint = new.fingerprint  # "другая реплика" уже всё сделала
     assert await sync_embedder_fingerprint(store, new) == "match:after-wait"
     assert store._chunks["d0:0"].embedding == original  # мы НЕ переэмбеддили
+
+
+async def test_openai_embedder_reuses_one_client(monkeypatch):
+    """/query used to build a fresh httpx pool per embed call — no keep-alive.
+    The embedder must now reuse a single client across calls (and close it)."""
+    import httpx
+
+    from app.services.embeddings import OpenAIEmbedder
+
+    seen_clients: list[object] = []
+
+    async def fake_post(self, url, **kwargs):
+        seen_clients.append(self)
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [0.0] * 4}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    embedder = OpenAIEmbedder(base_url="http://gw.test/v1", api_key="k", dim=4)
+    await embedder.embed(["a"])
+    await embedder.embed(["b"])
+    assert len(seen_clients) == 2
+    assert seen_clients[0] is seen_clients[1]
+
+    await embedder.aclose()
+    assert embedder._client is None

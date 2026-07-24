@@ -193,17 +193,32 @@ class OpenAIEmbedder:
         # the gateway or directly produces the same vectors, so switching
         # the transport must not trigger a pointless corpus re-embed.
         self.fingerprint = f"openai:{model}:{dim}"
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        # One shared client per embedder instance: /query used to build (and
+        # tear down) a fresh connection pool on EVERY call — no keep-alive to
+        # the gateway at all. trust_env=False now matches OpenAIChatLLM: this
+        # is an internal service URL, system proxies must not reroute it.
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout_s, trust_env=False)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         payload = {"model": self.model, "input": list(texts)}
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-                resp = await client.post(
-                    f"{self.base_url}/embeddings", json=payload, headers=headers
-                )
-                resp.raise_for_status()
-                data = resp.json()["data"]
+            client = self._get_client()
+            resp = await client.post(
+                f"{self.base_url}/embeddings", json=payload, headers=headers
+            )
+            resp.raise_for_status()
+            data = resp.json()["data"]
         except httpx.HTTPError as exc:  # timeouts, connect errors, 4xx/5xx
             raise ProviderError(f"embeddings provider failed: {exc}") from exc
         # The API may return items out of order; sort by index to be safe.
