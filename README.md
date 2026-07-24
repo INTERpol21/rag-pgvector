@@ -147,7 +147,7 @@ make typecheck                    # strict mypy over app
 
 ---
 
-MIT. Portfolio demo — siblings: [llm-gateway](https://github.com/INTERpol21/llm-gateway) · [mcp-tools-server](https://github.com/INTERpol21/mcp-tools-server) · [agent-orchestrator](https://github.com/INTERpol21/agent-orchestrator)
+MIT. Portfolio demo — siblings: [llm-gateway](https://github.com/INTERpol21/llm-gateway) · [mcp-tools-server](https://github.com/INTERpol21/mcp-tools-server) · [agent-orchestrator](https://github.com/INTERpol21/agent-orchestrator). **Run the whole platform** (all four services + web console + Postgres/Redis behind one origin) from the umbrella compose in [llm-platform-console](https://github.com/INTERpol21/llm-platform-console) — `docker compose up --build` there brings everything up offline on mock models.
 
 ## Releases
 
